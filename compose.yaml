@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: xyx
+      POSTGRES_USER: xyx
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    ports: ["127.0.0.1:5432:5432"]
+    volumes: ["xyx-postgres:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U xyx"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  ipfs:
+    image: ipfs/kubo:v0.38.2
+    ports: ["127.0.0.1:5001:5001", "127.0.0.1:8080:8080"]
+    volumes: ["xyx-ipfs:/data/ipfs"]
+volumes:
+  xyx-postgres:
+  xyx-ipfs:

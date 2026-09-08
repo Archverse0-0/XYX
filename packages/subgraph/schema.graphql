@@ -1,0 +1,81 @@
+type Endpoint @entity(immutable: false) {
+  id: ID!
+  providerKey: Bytes!
+  receiptCount: BigInt!
+  scoredSuccesses: BigInt!
+  scoredFailures: BigInt!
+  excludedOutcomes: BigInt!
+  lastObservedAt: BigInt!
+  receipts: [Receipt!]! @derivedFrom(field: "endpoint")
+}
+type Receipt @entity(immutable: false) {
+  id: ID!
+  providerKey: Bytes!
+  endpoint: Endpoint!
+  payer: Bytes!
+  amountPaid: BigInt!
+  specHash: Bytes!
+  paymentHash: Bytes!
+  requestHash: Bytes!
+  responseHash: Bytes!
+  evidenceHash: Bytes!
+  evidenceURIHash: Bytes!
+  evidenceURI: String!
+  latencyMs: Int!
+  httpStatus: Int!
+  outcome: Int!
+  providerAgentRegistry: Bytes
+  providerAgentId: BigInt
+  observedAt: BigInt!
+  blockNumber: BigInt!
+  transactionHash: Bytes!
+}
+type AgentIdentity @entity(immutable: false) {
+  id: ID!
+  registry: Bytes!
+  agentId: BigInt!
+  owner: Bytes!
+  agentURI: String!
+  registeredAtBlock: BigInt!
+  validations: [Validation!]! @derivedFrom(field: "agent")
+}
+type Validation @entity(immutable: false) {
+  id: ID!
+  agent: AgentIdentity!
+  validator: Bytes!
+  response: Int!
+  tag: String!
+  requestHash: Bytes!
+  responseHash: Bytes!
+  updatedAt: BigInt!
+}
+type Feedback @entity(immutable: false) {
+  id: ID!
+  agent: AgentIdentity!
+  client: Bytes!
+  feedbackIndex: BigInt!
+  value: BigInt!
+  valueDecimals: Int!
+  indexedTag: Bytes!
+  tag1: String!
+  tag2: String!
+  endpoint: String!
+  feedbackURI: String!
+  feedbackHash: Bytes!
+  revoked: Boolean!
+  updatedAt: BigInt!
+}
+type Job @entity(immutable: false) {
+  id: ID!
+  client: Bytes!
+  provider: Bytes!
+  evaluator: Bytes!
+  budget: BigInt!
+  deliverableHash: Bytes
+  reasonHash: Bytes
+  status: String!
+  createdAt: BigInt!
+  expiredAt: BigInt
+  resolvedAt: BigInt
+  transactionHash: Bytes!
+}

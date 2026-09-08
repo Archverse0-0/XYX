@@ -1,0 +1,51 @@
+{
+  "name": "xyx",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "tsx --test packages/shared/test/*.test.ts packages/risk-engine/test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "test:contracts": "forge test --root packages/contracts -vvv",
+    "build:contracts": "forge build --root packages/contracts",
+    "api": "tsx --env-file-if-exists=.env apps/api/src/main.ts",
+    "witness": "tsx --env-file-if-exists=.env.witness apps/witness/src/main.ts",
+    "dev:web": "next dev apps/web",
+    "build:web": "next build apps/web",
+    "doctor": "tsx --env-file-if-exists=.env scripts/doctor.ts",
+    "circle:create-wallet": "tsx --env-file-if-exists=.env scripts/create-circle-wallet.ts",
+    "subgraph:render": "node scripts/render-subgraph.mjs",
+    "subgraph:codegen": "npm run subgraph:render && (cd packages/subgraph && graph codegen subgraph.yaml)",
+    "subgraph:build": "npm run subgraph:render && (cd packages/subgraph && graph build subgraph.yaml)"
+  },
+  "dependencies": {
+    "@circle-fin/developer-controlled-wallets": "^9.6.0",
+    "@graphprotocol/graph-ts": "^0.38.2",
+    "@openzeppelin/contracts": "5.6.1",
+    "@privy-io/node": "^0.34.0",
+    "@privy-io/react-auth": "^3.8.1",
+    "@privy-io/wagmi": "latest",
+    "@tanstack/react-query": "^5.90.0",
+    "@x402/svm": "^2.21.0",
+    "ajv": "^8.17.1",
+    "fastify": "^5.6.0",
+    "ipaddr.js": "^2.5.0",
+    "next": "^16.3.4",
+    "pg": "^8.16.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "undici": "^8.10.2",
+    "viem": "^2.37.0",
+    "wagmi": "^3.7.7",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/pg": "^8.15.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "@graphprotocol/graph-cli": "^0.91.1"
+  }
+}
