@@ -1,0 +1,33 @@
+{
+  "session": "04",
+  "component": "the-graph",
+  "network": "arc-testnet",
+  "chainId": 5042002,
+  "classification": "LIVE_VERIFIED_GRAPH_INFRASTRUCTURE",
+  "observedAt": "2026-09-09T19:03:54.219Z",
+  "graph": {
+    "endpoint": "https://api.studio.thegraph.com/query/1759975/xyx-arc/v0.1.0",
+    "deploymentId": "QmaFDTDR41XFiatVmRnjoi3siZBXW9n4zAhCanU6T5CFrQ",
+    "indexedBlock": 61276005,
+    "indexedBlockHash": "0x487cb7dd9f0f618ddab9927ae89049eaf090fe41874ad0be1079c63bfce392d9",
+    "hasIndexingErrors": false,
+    "deploymentMatchesConfiguredId": true
+  },
+  "arcVerification": {
+    "blockNumber": 61276005,
+    "blockHash": "0x487cb7dd9f0f618ddab9927ae89049eaf090fe41874ad0be1079c63bfce392d9",
+    "graphBlockHashMatchesArc": true
+  },
+  "receiptState": {
+    "countObserved": 0,
+    "status": "NOT_YET_PROVEN",
+    "note": "Graph infrastructure is live and verified, but no real ReceiptAnchored event has been proven yet."
+  },
+  "claims": {
+    "graphInfrastructureLive": true,
+    "graphArcBlockProvenanceVerified": true,
+    "commerceE2EProven": false,
+    "feedbackLoopProven": false,
+    "protectedJobE2EProven": false
+  }
+}

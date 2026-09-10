@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "network": "arc-testnet",
+  "chainId": 5042002,
+  "registry": {
+    "address": "0xfB94329c89Af2FC541bEf32e1ec99cbed87a39F2",
+    "deploymentTx": "0x41d3b6651b83df8883570abd30a1c6ce89b11267818d367100ef3b2afee447ca",
+    "deploymentBlock": 61238484,
+    "bytecodeBytes": 5270,
+    "maxReceiptAge": 86400,
+    "paused": false
+  },
+  "evaluator": {
+    "address": "0xCEBFedAc66B0fFfAD452D3f1B356D1A3120dB233",
+    "deploymentTx": "0x6ec0407bb51b50fdad652822a14ed510e460dada542f33d666a7fdb1d603d0f6",
+    "deploymentBlock": 61238490,
+    "bytecodeBytes": 5137,
+    "erc8183Target": "0x0747EEf0706327138c69792bF28Cd525089e4583",
+    "verdictLifetime": 300,
+    "paused": false
+  },
+  "signers": {
+    "deployer": "0xD42edDe4274A91814666B795708BDAc74c8B14d6",
+    "admin": "0xD42edDe4274A91814666B795708BDAc74c8B14d6",
+    "witnessAttestor": "0x15cd0E9055BD775eF69000438e756E4476562E8F",
+    "evaluatorAttestor": "0x644C11572E3792bd1dE5959D09ECBc6f63304277",
+    "pauser": "0xD42edDe4274A91814666B795708BDAc74c8B14d6"
+  },
+  "roleVerification": {
+    "registryAdmin": true,
+    "registryWitnessAttestor": true,
+    "registryPauser": true,
+    "evaluatorAdmin": true,
+    "evaluatorAttestor": true,
+    "evaluatorPauser": true,
+    "unauthorizedAttestor": false,
+    "witnessEvaluatorSeparation": true
+  },
+  "gitCommit": "1fb117120c72c38e18d96fc8c2ff2824a09441be",
+  "deployedAt": "2026-09-09T12:30:54.000Z"
+}

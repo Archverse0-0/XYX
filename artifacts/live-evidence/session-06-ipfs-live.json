@@ -1,0 +1,31 @@
+{
+  "session": 6,
+  "component": "ipfs",
+  "classification": "LIVE_VERIFIED_IPFS_INFRASTRUCTURE",
+  "observedAt": "2026-09-10T08:09:36.685Z",
+  "network": "arc-testnet",
+  "chainId": 5042002,
+  "provider": "pinata",
+  "networkMode": "public",
+  "cid": "bafkreidna4g3p7hqj24opyy3cry2lpxocgss2l7r4qt6sgtvjtknafurlq",
+  "write": { "status": "PASS" },
+  "readback": { "status": "PASS", "parsed": true },
+  "integrity": {
+    "originalCanonicalHash": "0xacc255047dcb8487492ed09c982c84dfe46afd0237c7ea6e2bae54cc253167b4",
+    "retrievedCanonicalHash": "0xacc255047dcb8487492ed09c982c84dfe46afd0237c7ea6e2bae54cc253167b4",
+    "byteMatch": true,
+    "hashMatches": true,
+    "semanticContentMatches": true
+  },
+  "claims": {
+    "ipfsInfrastructureLive": true,
+    "liveWriteProven": true,
+    "liveReadbackProven": true,
+    "contentIntegrityProven": true,
+    "witnessExecutionEvidenceProven": false,
+    "machineExecutionLinkedToJobProven": false,
+    "evidenceRegistryAnchoringProven": false,
+    "graphReceiptFeedbackProven": false,
+    "protectedJobE2EProven": false
+  }
+}

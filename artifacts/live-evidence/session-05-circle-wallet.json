@@ -1,0 +1,44 @@
+{
+  "session": 5,
+  "component": "circle-wallet",
+  "classification": "LIVE_VERIFIED_CIRCLE_WALLET_INFRASTRUCTURE",
+  "observedAt": "2026-09-09T22:37:53Z",
+  "network": "arc-testnet",
+  "chainId": 5042002,
+  "circleWallet": {
+    "walletId": "97d7e14f-c4f2-5525-bbd8-4025cc21161a",
+    "walletSetId": "04d71812-ee2a-57eb-a351-54dd3ac9d327",
+    "address": "0x55763d498fd057d17ffcc2fb540789ce76f4f085",
+    "blockchain": "ARC-TESTNET",
+    "accountType": "EOA",
+    "custodyType": "DEVELOPER",
+    "state": "LIVE",
+    "independentlyVerified": true
+  },
+  "usdc": {
+    "address": "0x3600000000000000000000000000000000000000",
+    "decimals": 6,
+    "balanceRaw": 20000000,
+    "balanceUsdc": 20
+  },
+  "arc": {
+    "observedHead": 61300531
+  },
+  "verifier": {
+    "arcChainId": "PASS",
+    "arcHead": "PASS",
+    "usdcContract": "PASS",
+    "usdcDecimals": "PASS",
+    "walletUsdcBalance": "PASS",
+    "graphMeta": "PASS",
+    "graphFreshness": "PASS",
+    "graphBlockHash": "PASS"
+  },
+  "claims": {
+    "circleWalletLive": true,
+    "arcTestnetWalletVerified": true,
+    "walletFundedWithRealTestnetUsdc": true,
+    "machineExecutionLinkedToJobProven": false,
+    "protectedJobE2EProven": false
+  }
+}
