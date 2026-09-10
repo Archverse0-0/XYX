@@ -19,7 +19,7 @@ function publicOrigin(value: string | undefined): string | null {
   }
 }
 
-export function providerRegistration(env: NodeJS.ProcessEnv = process.env): ProviderRegistration | null {
+export function providerRegistration(env: Readonly<Record<string, string | undefined>> = process.env): ProviderRegistration | null {
   const origin = publicOrigin(env.PROVIDER_PUBLIC_ORIGIN);
   const agentId = env.ERC8004_AGENT_ID;
   const payeeAddress = env.PROVIDER_PAYEE_ADDRESS;
