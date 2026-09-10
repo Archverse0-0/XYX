@@ -26,3 +26,19 @@ If the live Arc documentation conflicts with repository assumptions or the PRD, 
 
 For documentation discovery, prefer the official Arc documentation index:
 https://docs.arc.io/llms.txt
+
+## XYX Documentation Authority
+
+Before making implementation decisions, read
+`docs/XYX_TECHNICAL_PRD_v1.1.md`.
+
+Use this authority order when sources conflict:
+
+1. Frozen PRD invariants.
+2. Verified current implementation and live facts.
+3. `docs/XYX_TECHNICAL_PRD_v1.1.md`.
+4. Future ideas and backlog.
+
+Files under `docs/archive/` are historical. They cannot override PRD v1.1 or
+verified implementation facts. Do not revive features excluded from the current
+P0 merely because an archived document mentions them.

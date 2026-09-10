@@ -1,16 +1,37 @@
 # XYX — Expose, Yield, Execute
 
-XYX is the risk, verification, and settlement layer for autonomous agent commerce. The implementation follows the frozen P0 architecture in `XYX — End-to-End Product Requirements Document v1.0.md`.
+XYX verifies what autonomous agents actually did before paid jobs settle onchain.
 
 The repository is intentionally English-language for contributors and reviewers. User-facing operational notes are available in `docs/`.
 
+## Current Documentation Authority
+
+The current primary implementation reference is
+[docs/XYX_TECHNICAL_PRD_v1.1.md](docs/XYX_TECHNICAL_PRD_v1.1.md).
+
+When sources conflict, use this order:
+
+1. Frozen PRD invariants.
+2. Verified current implementation and live facts.
+3. The canonical technical PRD v1.1.
+4. Future ideas and backlog.
+
+Verified execution history is recorded in [docs/sessions/](docs/sessions/),
+with sanitized live proof under [artifacts/live-evidence/](artifacts/live-evidence/).
+Anything under [docs/archive/](docs/archive/) is historical and must not be
+used as current implementation authority.
+
 ## Status
 
-The local P0 foundation is implemented: immutable evidence anchoring, signed ERC-8183 verdict forwarding, deterministic risk scoring, Circle marketplace execution boundaries, a centralized Execution Witness, Postgres idempotency, IPFS evidence verification, Graph querying, and a Privy/wagmi frontend.
+The repository contains verified foundation work and remaining P0 lifecycle
+dependencies. Consult the canonical PRD and session reports for the current
+claim boundary of each component.
 
-The live no-mock acceptance flow is not claimed until real credentials, deployed XYX contract addresses, a live subgraph endpoint, and funded Arc Testnet wallets are configured. The test suite uses only the isolated mocks allowed by PRD section 104.
-
-See [IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md) for a requirement-by-requirement P0 checklist.
+The full live protected-job lifecycle is not claimed. Mocks and fixtures are
+limited to local tests; live acceptance requires real external dependencies and
+verifiable testnet evidence. ERC-8004 remains
+`LIVE_ERC8004_REGISTRY_VERIFIED_IDENTITY_NOT_YET_PROVEN` until a public provider
+identity mapping is independently verified.
 
 ## Requirements
 
@@ -43,7 +64,10 @@ Run `npm run doctor` after creating the environment files. The doctor fails clos
 
 ## Live setup
 
-Follow [LIVE_E2E.md](docs/LIVE_E2E.md). Do not put private keys in chat or commit them. The witness and evaluator keys must be separate from the API runtime and relayer key.
+Follow the live-proof requirements in the canonical PRD and the corresponding
+verified session reports. Do not put private keys in chat or commit them. The
+witness and evaluator keys must be separate from the API runtime and relayer
+key.
 
 The Arc reference ERC-8183 proxy is recorded in `packages/erc8183/deployment.json`; its ABI is stored from the verified explorer response. ERC-8004 Arc deployment addresses and ABI snapshots are under `packages/erc8004/`.
 
