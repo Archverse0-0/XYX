@@ -1,0 +1,50 @@
+{
+  "session": "7B",
+  "component": "erc8004-controlled-provider-identity",
+  "classification": "LIVE_ERC8004_CONTROLLED_PROVIDER_IDENTITY_VERIFIED",
+  "observedAt": "2026-09-11T11:18:15Z",
+  "network": "arc-testnet",
+  "chainId": 5042002,
+  "identityRegistry": "0x8004A818BFB912233c491871b3d84c89A494BD9e",
+  "registration": {
+    "transactionHash": "0x97e29a7f09f8071b466cb3754eff22adb4add389887563ba73a119b5a5a41a2a",
+    "blockNumber": 61556408,
+    "status": "SUCCESS",
+    "agentId": "894335",
+    "providerWallet": "0x7ea90Ac2A2bA5fF6c71e7E9D23037D64AbD2b4da",
+    "tokenURI": "https://xyx-provider.vercel.app/agent-metadata.json",
+    "agentWallet": "0x7ea90Ac2A2bA5fF6c71e7E9D23037D64AbD2b4da"
+  },
+  "provider": {
+    "origin": "https://xyx-provider.vercel.app",
+    "endpoint": "https://xyx-provider.vercel.app/api/task",
+    "wellKnownStatus": 200,
+    "metadataStatus": 200,
+    "taskStatus": 200,
+    "productionRegistrationToolStatus": 404
+  },
+  "resolver": {
+    "resolvedByProductionClient": true,
+    "agentId": "894335",
+    "registry": "0x8004A818BFB912233c491871b3d84c89A494BD9e"
+  },
+  "validation": {
+    "queryStatus": "QUERY_WORKS_EMPTY_RESULT",
+    "recordCount": 0
+  },
+  "claims": {
+    "erc8004ControlledProviderIdentityLive": true,
+    "productionIdentityResolutionProven": true,
+    "identityCrossCheckProven": true,
+    "providerEndpointExactMatchProven": true,
+    "buyerAgentLiveSelectionProven": false,
+    "protectedJobE2EProven": false,
+    "machineExecutionLinkedToJobProven": false,
+    "witnessExecutionEvidenceProven": false,
+    "settlementProven": false
+  },
+  "notes": [
+    "Agent ID 894335 is authoritative only from the confirmed onchain registration receipt and subsequent onchain state reads.",
+    "No mocked identity was used."
+  ]
+}
