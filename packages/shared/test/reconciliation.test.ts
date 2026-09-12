@@ -60,8 +60,9 @@ function testDB(runJobId?: string) {
       }
       // DELETE FROM job_operations
       if (sql.includes('DELETE FROM job_operations')) {
-        const key = `${args[0]}:${args[1]}`;
-        operations.delete(key);
+        if(sql.includes('WHERE id=$1')) {
+          for(const [key,row] of operations)if(row.id===args[0])operations.delete(key);
+        } else operations.delete(`${args[0]}:${args[1]}`);
         return { rowCount: 1, rows: [] };
       }
       // SELECT * FROM protected_job_runs WHERE id=$1

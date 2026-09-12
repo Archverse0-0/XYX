@@ -53,11 +53,11 @@ export class BuyerRuntime {
       const acquired=await this.db.query("UPDATE agent_runs SET status='PLANNING' WHERE id=$1 AND status='QUEUED' RETURNING *",[runId]);
       if(!acquired.rowCount)return;const run=acquired.rows[0];
       await this.cancelled(runId);
-      const intent=await this.planner.intent(run.objective,policySchema.parse(run.policy_json));
+      const intent=await this.planner.intent(run.objective as string,policySchema.parse(run.policy_json));
       await this.db.query('INSERT INTO purchase_intents(run_id,intent) VALUES($1,$2)',[runId,JSON.stringify(intent)]);
       await event(this.db,runId,'intent.parsed',{...intent,query:undefined});
       await event(this.db,runId,'marketplace.search.started',{});
-      const snapshot=await this.assess(intent,run.objective);
+      const snapshot=await this.assess(intent,run.objective as string);
       await this.db.query('INSERT INTO candidate_snapshots(run_id,snapshot,decision) VALUES($1,$2,$3)',[runId,JSON.stringify(snapshot),JSON.stringify(snapshot.decision)]);
       await event(this.db,runId,'marketplace.search.completed',{count:snapshot.plans.length});
       await event(this.db,runId,'marketplace.compatibility.checked',{rejected:snapshot.rejections});

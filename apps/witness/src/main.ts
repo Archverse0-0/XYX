@@ -23,10 +23,16 @@ app.get('/healthz',async(_,reply)=>{
   const checks:Record<string,boolean>={};
   await Promise.all(Object.entries({postgres:()=>db.query('SELECT 1'),arc:()=>witness.client.getChainId(),graph:()=>graph.meta(),evidence:()=>storage.health(),signer:async()=>{
     const abi=parseAbi(['function hasRole(bytes32,address) view returns(bool)','function paused() view returns(bool)']);
+    const evaluatorAbi=parseAbi(['function hasRole(bytes32,address) view returns(bool)','function paused() view returns(bool)','function agenticCommerce() view returns(address)']);
     const {keccak256,toHex}=await import('viem');
     if(await witness.client.getChainId()!==5042002)throw new Error('WRONG_CHAIN');
-    if(!await witness.client.readContract({address:cfg.EVIDENCE_REGISTRY_ADDRESS as Address,abi,functionName:'hasRole',args:[keccak256(toHex('ATTESTOR_ROLE')),witness.signer.address]}))throw new Error('SIGNER_NOT_AUTHORIZED');
+    const role=keccak256(toHex('ATTESTOR_ROLE'));
+    if(!await witness.client.readContract({address:cfg.EVIDENCE_REGISTRY_ADDRESS as Address,abi,functionName:'hasRole',args:[role,witness.signer.address]}))throw new Error('SIGNER_NOT_AUTHORIZED');
     if(await witness.client.readContract({address:cfg.EVIDENCE_REGISTRY_ADDRESS as Address,abi,functionName:'paused'}))throw new Error('PAUSED');
+    if(!await witness.client.readContract({address:cfg.XYX_EVALUATOR_ADDRESS as Address,abi:evaluatorAbi,functionName:'hasRole',args:[role,witness.evaluatorSigner.address]}))throw new Error('EVALUATOR_SIGNER_NOT_AUTHORIZED');
+    if(await witness.client.readContract({address:cfg.XYX_EVALUATOR_ADDRESS as Address,abi:evaluatorAbi,functionName:'paused'}))throw new Error('EVALUATOR_PAUSED');
+    const target=await witness.client.readContract({address:cfg.XYX_EVALUATOR_ADDRESS as Address,abi:evaluatorAbi,functionName:'agenticCommerce'});
+    if(target.toLowerCase()!==cfg.ERC8183_ADDRESS.toLowerCase())throw new Error('ERC8183_CONFIGURATION_MISMATCH');
   }}).map(async([name,check])=>{try{await check();checks[name]=true;}catch{checks[name]=false;}}));
   const ready=Object.values(checks).every(Boolean);
   const circleExecutionConfigured=Boolean(process.env.CIRCLE_API_KEY&&process.env.CIRCLE_ENTITY_SECRET);

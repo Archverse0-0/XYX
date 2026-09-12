@@ -1,10 +1,11 @@
 import { z } from 'zod';
-import type { Address, Hex } from 'viem';
+import { decodeEventLog, type Address, type Hex } from 'viem';
 import { arcClient } from './chain.js';
 import { atomicAmount, hashJSON, hex32 } from './index.js';
 import { commerceAbi, chainJobSchema, jobEvent } from '../../erc8183/service.js';
 import { assertJobBudget, createJobSchema, jobIdSchema } from './jobs.js';
 import type { DB } from './storage.js';
+import { evaluatorAbi } from './abi.js';
 
 // Canonical state inspection for deterministic crash recovery.
 // Each operation type has different canonical evidence on Arc/ERC-8183.
@@ -30,6 +31,10 @@ export type OperationRow = {
   last_reconciliation_at: Date | null;
   canonical_snapshot: unknown;
 };
+
+function jsonValue(value: unknown): unknown {
+  return typeof value === 'string' ? JSON.parse(value) : value;
+}
 
 export class ProtectedJobReconciler {
   readonly client: ReturnType<typeof arcClient>;
@@ -71,6 +76,7 @@ export class ProtectedJobReconciler {
       case 'fund': return this.reconcileFund(row);
       case 'submit': return this.reconcileSubmit(row);
       case 'evaluate': return this.reconcileEvaluate(row);
+      case 'refund': return this.reconcileRefund(row);
       default: return { status: 'STILL_AMBIGUOUS' };
     }
   }
@@ -81,7 +87,7 @@ export class ProtectedJobReconciler {
   // If job doesn't exist → STILL_AMBIGUOUS (can't safely retry without knowing if tx was broadcast)
   // If job exists with different params → CANONICAL_CONFLICT
   private async reconcileCreate(row: OperationRow): Promise<ReconciliationResult> {
-    const spec = createJobSchema.parse(JSON.parse(row.canonical_snapshot as string ?? '{}'));
+    const spec = createJobSchema.parse(jsonValue(row.canonical_snapshot));
     if (!spec) return { status: 'STILL_AMBIGUOUS' };
 
     // If we have a tx hash, try to find the JobCreated event
@@ -93,7 +99,7 @@ export class ProtectedJobReconciler {
           if (
             String(event.client).toLowerCase() === this.walletAddress.toLowerCase() &&
             String(event.provider).toLowerCase() === spec.provider.toLowerCase() &&
-            String(event.evaluator).toLowerCase() === spec.evaluation?.kind ? spec.evaluation.kind : '' // evaluator comes from config
+            String(event.evaluator).toLowerCase() === this.evaluatorAddress.toLowerCase()
           ) {
             const result = { jobId: String(event.jobId), txHash: row.tx_hash };
             await this.markConfirmed(row.id, result);
@@ -118,9 +124,7 @@ export class ProtectedJobReconciler {
     const run = await this.getRun(row.job_run_id);
     if (!run?.job_id) return { status: 'STILL_AMBIGUOUS' };
 
-    const expected = JSON.parse(row.canonical_snapshot as string ?? '{}');
-    if (!expected.amount) return { status: 'STILL_AMBIGUOUS' };
-
+    const expected = z.object({ amount: z.string().regex(/^\d+$/) }).parse(jsonValue(row.canonical_snapshot));
     try {
       const job = chainJobSchema.parse(await this.client.readContract({
         address: this.commerceAddress,
@@ -218,8 +222,7 @@ export class ProtectedJobReconciler {
     const run = await this.getRun(row.job_run_id);
     if (!run?.job_id) return { status: 'STILL_AMBIGUOUS' };
 
-    const expected = JSON.parse(row.canonical_snapshot as string ?? '{}');
-    if (!expected.deliverableHash) return { status: 'STILL_AMBIGUOUS' };
+    const expected = z.object({ deliverableHash: hex32 }).passthrough().parse(jsonValue(row.canonical_snapshot));
 
     // If we have a tx hash, check for JobSubmitted event
     if (row.tx_hash) {
@@ -283,13 +286,32 @@ export class ProtectedJobReconciler {
     const run = await this.getRun(row.job_run_id);
     if (!run?.job_id) return { status: 'STILL_AMBIGUOUS' };
 
-    const expected = JSON.parse(row.canonical_snapshot as string ?? '{}');
+    const expected = z.object({ decision: z.union([z.literal(1), z.literal(2)]).optional() }).passthrough().parse(jsonValue(row.canonical_snapshot));
 
     // If we have a tx hash, check the verdict transaction
     if (row.tx_hash) {
       try {
         const receipt = await this.client.getTransactionReceipt({ hash: row.tx_hash as Hex });
         if (receipt.status === 'success') {
+          const verdict = z.object({
+            decision: z.union([z.literal(1), z.literal(2)]),
+            evidenceHash: hex32,
+            reasonHash: hex32,
+          }).passthrough().parse(jsonValue(run.verdict));
+          const verdictEvents = receipt.logs.flatMap(log => {
+            if (log.address.toLowerCase() !== this.evaluatorAddress.toLowerCase()) return [];
+            try {
+              const decoded = decodeEventLog({ abi: evaluatorAbi, data: log.data, topics: log.topics, strict: true });
+              return decoded.eventName === 'JobVerdictExecuted' ? [decoded.args as unknown as Record<string, unknown>] : [];
+            } catch { return []; }
+          });
+          if (verdictEvents.length !== 1) return { status: 'CANONICAL_CONFLICT', detail: 'VERDICT_EVENT_UNVERIFIED' };
+          const verdictEvent = verdictEvents[0];
+          if (String(verdictEvent.jobId) !== String(run.job_id) || verdictEvent.decision !== verdict.decision ||
+              String(verdictEvent.evidenceHash).toLowerCase() !== verdict.evidenceHash.toLowerCase() ||
+              String(verdictEvent.reasonHash).toLowerCase() !== verdict.reasonHash.toLowerCase()) {
+            return { status: 'CANONICAL_CONFLICT', detail: 'VERDICT_EVENT_MISMATCH' };
+          }
           // Verdict was executed — check final job state
           const job = chainJobSchema.parse(await this.client.readContract({
             address: this.commerceAddress,
@@ -300,7 +322,7 @@ export class ProtectedJobReconciler {
 
           const finalStatus = job.status === 3 ? 'COMPLETED' : job.status === 4 ? 'REJECTED' : null;
           if (finalStatus && (!expected.decision || (expected.decision === 1 && finalStatus === 'COMPLETED') || (expected.decision === 2 && finalStatus === 'REJECTED'))) {
-            const result = { jobId: String(run.job_id), decision: expected.decision ?? (job.status === 3 ? 1 : 2), txHash: row.tx_hash };
+            const result = { jobId: String(run.job_id), decision: verdict.decision, txHash: row.tx_hash };
             await this.markConfirmed(row.id, result);
             return { status: 'RECOVERED_CONFIRMED', result };
           }
@@ -319,15 +341,12 @@ export class ProtectedJobReconciler {
       }));
 
       if (job.status === 3 || job.status === 4) {
-        // Already settled — but we don't know if it was our verdict
-        // Check if we have a verdict in the run
+        // Final state alone cannot prove which verdict caused settlement.
         if (run.verdict) {
-          const verdict = typeof run.verdict === 'string' ? JSON.parse(run.verdict) : run.verdict;
+          const verdict = z.object({ decision: z.union([z.literal(1), z.literal(2)]) }).passthrough().parse(jsonValue(run.verdict));
           if ((job.status === 3 && verdict.decision === 1) || (job.status === 4 && verdict.decision === 2)) {
-            // Our verdict was applied — recover
-            const result = { jobId: String(run.job_id), decision: verdict.decision, txHash: run.tx_hash };
-            await this.markConfirmed(row.id, result);
-            return { status: 'RECOVERED_CONFIRMED', result };
+            if (!run.tx_hash) return { status: 'STILL_AMBIGUOUS' };
+            return this.reconcileEvaluate({ ...row, tx_hash: String(run.tx_hash) });
           }
         }
         return { status: 'STILL_AMBIGUOUS' };
@@ -339,6 +358,37 @@ export class ProtectedJobReconciler {
       }
 
       return { status: 'STILL_AMBIGUOUS' };
+    } catch {
+      return { status: 'STILL_AMBIGUOUS' };
+    }
+  }
+
+  private async reconcileRefund(row: OperationRow): Promise<ReconciliationResult> {
+    const run = await this.getRun(row.job_run_id);
+    if (!run?.job_id) return { status: 'STILL_AMBIGUOUS' };
+    try {
+      const job = chainJobSchema.parse(await this.client.readContract({
+        address: this.commerceAddress,
+        abi: commerceAbi,
+        functionName: 'getJob',
+        args: [BigInt(jobIdSchema.parse(String(run.job_id)))],
+      }));
+      if (job.status === 5) {
+        if (!row.tx_hash) return { status: 'STILL_AMBIGUOUS' };
+        const receipt = await this.client.getTransactionReceipt({ hash: row.tx_hash as Hex });
+        if (receipt.status !== 'success') return { status: 'SAFE_TO_RETRY' };
+        const refunded = jobEvent(receipt.logs, this.commerceAddress, 'Refunded');
+        if (String(refunded.jobId) !== String(run.job_id) || String(refunded.client).toLowerCase() !== this.walletAddress.toLowerCase()) {
+          return { status: 'CANONICAL_CONFLICT', detail: 'REFUND_EVENT_MISMATCH' };
+        }
+        const result = { jobId: String(run.job_id), state: 'REFUNDED', txHash: row.tx_hash };
+        await this.markConfirmed(row.id, result);
+        return { status: 'RECOVERED_CONFIRMED', result };
+      }
+      if ((job.status === 1 || job.status === 2) && job.expiredAt <= BigInt(Math.floor(Date.now() / 1000))) {
+        return { status: 'SAFE_TO_RETRY' };
+      }
+      return { status: 'CANONICAL_CONFLICT', detail: `Job status ${job.status} is not refund-eligible` };
     } catch {
       return { status: 'STILL_AMBIGUOUS' };
     }

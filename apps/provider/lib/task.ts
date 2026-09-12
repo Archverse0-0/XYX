@@ -19,6 +19,9 @@ export function normalizeTask(input: unknown): TaskResult {
   if (Buffer.byteLength(text, 'utf8') > MAX_TASK_TEXT_BYTES) {
     throw new TaskInputError('TASK_TEXT_TOO_LARGE');
   }
+  if(/(?:private[_-]?key|api[_-]?key|entity[_-]?secret|mnemonic|seed phrase|bearer\s+[a-z0-9._-]+|password\s*[=:])/iu.test(text)) {
+    throw new TaskInputError('TASK_SENSITIVE_INPUT_REJECTED');
+  }
 
   const normalized = text.trim().replace(/\s+/gu, ' ');
   if (!normalized) throw new TaskInputError('TASK_TEXT_REQUIRED');

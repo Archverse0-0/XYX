@@ -56,6 +56,11 @@ test('task rejects oversized text', async () => {
   assert.deepEqual(await response.json(), { ok: false, error: 'TASK_TEXT_TOO_LARGE' });
 });
 
+test('task rejects secret-like input instead of reflecting it',async()=>{
+  const response=await task(new Request('http://provider.test/api/task',{method:'POST',body:JSON.stringify({text:'password=secret123'})}));
+  assert.equal(response.status,400);assert.equal((await response.json()).error,'TASK_SENSITIVE_INPUT_REJECTED');
+});
+
 test('well-known registration is unavailable until public identity configuration exists', async () => {
   const response = await withoutRegistrationConfig(async () => registration());
   assert.equal(response.status, 503);

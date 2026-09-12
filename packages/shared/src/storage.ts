@@ -3,12 +3,15 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 export const poolFor=(url:string)=>new pg.Pool({connectionString:url,max:10,connectionTimeoutMillis:5000,statement_timeout:15000});
-export type DB=ReturnType<typeof poolFor>;
+export interface DB {
+  query: (sql: string, ...args: unknown[]) => Promise<{ rowCount: number; rows: Record<string, unknown>[] }>;
+  connect: () => Promise<{ query: (sql: string, ...args: unknown[]) => Promise<{ rowCount: number; rows: Record<string, unknown>[] }>; release: () => void }>;
+}
 export async function migrate(db:DB) {
   const client=await db.connect();
   try {
     await client.query("SELECT pg_advisory_lock(hashtextextended('xyx-migrations',0))");
-    for(const file of ['001_initial.sql','002_job_operations.sql','003_reconciliation.sql']) {
+    for(const file of ['001_initial.sql','002_job_operations.sql','003_reconciliation.sql','004_provider_selections.sql']) {
       await client.query(await readFile(fileURLToPath(new URL('../../../apps/api/migrations/'+file,import.meta.url)),'utf8'));
     }
   } catch(error) { await client.query('ROLLBACK');throw error; }

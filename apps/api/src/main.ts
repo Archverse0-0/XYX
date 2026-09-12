@@ -48,8 +48,9 @@ app.post('/api/v1/agent/runs',async(req,reply)=>{
   const key=z.string().uuid().parse(req.headers['idempotency-key']);
   if(!(await health()).ready)return reply.code(503).send({error:'LIVE_DEPENDENCIES_NOT_READY'});
   const run=await createRun(db,owners.get(req)!,key,input.objective,input.policy);
-  if(run.created)void runtime.run(run.row.id).catch(()=>req.log.error({code:'RUN_PERSISTENCE_UNAVAILABLE'},'Run requires inspection'));
-  return reply.code(202).send({runId:run.row.id,status:run.row.status});
+  const runStatus=String(run.row.status);
+  if(run.created)void runtime.run(run.row.id as string).catch(()=>req.log.error({code:'RUN_PERSISTENCE_UNAVAILABLE'},'Run requires inspection'));
+  return reply.code(202).send({runId:run.row.id,status:runStatus});
 });
 app.get('/api/v1/agent/runs/:runId',async(req,reply)=>{
   const {runId}=z.object({runId:z.string().uuid()}).parse(req.params);

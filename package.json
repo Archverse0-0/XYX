@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "tsx --test packages/shared/test/*.test.ts packages/risk-engine/test/*.test.ts packages/graph-intelligence/test/*.test.ts",
+    "test": "tsx --test packages/shared/test/*.test.ts packages/risk-engine/test/*.test.ts packages/graph-intelligence/test/*.test.ts packages/erc8004/test/*.test.ts apps/provider/test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "test:contracts": "forge test --root packages/contracts -vvv",
     "build:contracts": "forge build --root packages/contracts",
@@ -19,7 +19,8 @@
     "subgraph:codegen": "npm run subgraph:render && (cd packages/subgraph && graph codegen subgraph.yaml)",
     "subgraph:build": "npm run subgraph:render && (cd packages/subgraph && graph build subgraph.yaml)",
     "verify:live": "tsx scripts/verify-live.ts",
-    "verify:ipfs-live": "tsx scripts/verify-ipfs-live.ts"
+    "verify:ipfs-live": "tsx scripts/verify-ipfs-live.ts",
+    "verify:protected-job": "tsx scripts/verify-protected-job.ts"
   },
   "dependencies": {
     "@circle-fin/developer-controlled-wallets": "^9.6.0",

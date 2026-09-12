@@ -27,15 +27,17 @@ export async function reconcileOperation(
 
   // Already confirmed — return cached result
   if (fullRow.state === 'CONFIRMED') {
-    return { status: 'RECOVERED_CONFIRMED', result: fullRow.result };
+    const parsed = typeof fullRow.result === 'string' ? JSON.parse(fullRow.result) : fullRow.result;
+    return { status: 'RECOVERED_CONFIRMED', result: parsed };
   }
 
   // Try reconciliation if we have a reconciler
   if (reconciler) {
     try {
       return await reconciler.reconcile(fullRow as import('./reconciler.js').OperationRow, requestHash);
-    } catch {
-      // Reconciliation itself failed — remain ambiguous
+    } catch (error) {
+      if (error instanceof Error && error.message === 'IDEMPOTENCY_CONFLICT') throw error;
+      // Dependency/read failures remain ambiguous and must never trigger a retry.
       return { status: 'STILL_AMBIGUOUS' };
     }
   }
@@ -74,13 +76,10 @@ export async function jobOperation<T>(
         return reconciliation.result as T;
       case 'SAFE_TO_RETRY':
         // Clear the old operation and allow a fresh attempt
-        await db.query(
-          `DELETE FROM job_operations WHERE job_run_id=$1 AND operation=$2`,
-          [runId, operation]
-        );
+        await db.query('DELETE FROM job_operations WHERE id=$1', [row.id]);
         break; // Fall through to new insert below
       case 'CANONICAL_CONFLICT':
-        throw new Error('JOB_CANONICAL_CONFLICT');
+        throw new Error(`JOB_CANONICAL_CONFLICT:${reconciliation.detail}`);
       case 'STILL_AMBIGUOUS':
       default:
         throw new Error('JOB_RECONCILIATION_REQUIRED');
@@ -88,13 +87,14 @@ export async function jobOperation<T>(
   }
 
   // For SAFE_TO_RETRY, we may have deleted the old operation and need to re-insert
-  const id = inserted.rows?.[0]?.id ?? randomUUID();
+  const id: string = (inserted.rows?.[0]?.id as string | undefined) ?? randomUUID();
   if (!inserted.rowCount) {
-    await db.query(
+    const retried = await db.query(
       `INSERT INTO job_operations(id,job_run_id,operation,request_hash,state,canonical_snapshot)
        VALUES($1,$2,$3,$4,'IN_FLIGHT',$5) ON CONFLICT(job_run_id,operation) DO NOTHING RETURNING id`,
       [id, runId, operation, requestHash, JSON.stringify(request)]
     );
+    if (retried.rowCount !== 1) throw new Error('JOB_BUSY');
   }
 
   try {
@@ -117,7 +117,7 @@ export async function withJobLock<T>(db: DB, runId: string, action: () => Promis
   const connection = await db.connect();
   let acquired = false;
   try {
-    acquired = (await connection.query('SELECT pg_try_advisory_lock(hashtextextended($1,1)) AS acquired', [runId])).rows[0].acquired;
+    acquired = Boolean((await connection.query('SELECT pg_try_advisory_lock(hashtextextended($1,1)) AS acquired', [runId])).rows[0].acquired);
     if (!acquired) throw new Error('JOB_BUSY');
     return await action();
   } finally {

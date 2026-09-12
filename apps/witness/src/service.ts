@@ -45,16 +45,16 @@ export class Witness {
       if(previous.rows.length) {
         const row=previous.rows[0];
         if(row.state==='RECEIPT_ANCHORED')return {receiptHash:row.receipt_hash,arcTxHash:row.arc_tx_hash};
-        if(row.state==='RECEIPT_SIGNED')return this.anchor(row.id);
+        if(row.state==='RECEIPT_SIGNED')return this.anchor(row.id as string);
         // Unknown payment state must be reconciled by an operator, never blindly retried.
         throw new Error('EXECUTION_REQUIRES_RECONCILIATION');
       }
       const {rows}=await this.db.query(`SELECT r.*,i.intent,s.snapshot FROM agent_runs r JOIN purchase_intents i ON i.run_id=r.id
         JOIN LATERAL(SELECT snapshot FROM candidate_snapshots WHERE run_id=r.id ORDER BY id DESC LIMIT 1)s ON true WHERE r.id=$1`,[runId]);
-      const run=rows[0];if(!run||run.status!=='SELECTED'||run.cancel_requested)throw new Error('RUN_NOT_EXECUTABLE');
+      const run=rows[0] as any;if(!run||run.status!=='SELECTED'||run.cancel_requested)throw new Error('RUN_NOT_EXECUTABLE');
       const intent=intentSchema.parse(run.intent);
       if(intent.requireProtection)throw new Error('PROTECTION_REQUIRED');
-      const plan=(run.snapshot.plans as ExecutionPlan[]).find(p=>p.candidate.endpointKey===run.selected_endpoint_key);
+      const plan=((run.snapshot as any).plans as ExecutionPlan[]).find(p=>p.candidate.endpointKey===run.selected_endpoint_key);
       if(!plan)throw new Error('SELECTION_NOT_FOUND');
       const id=serviceIdentity(plan.item.resource,plan.item.metadata.method);
       if(id.endpointKey!==plan.candidate.endpointKey||!plan.item.metadata.input||!ajv.validate(plan.item.metadata.input,plan.body))throw new Error('CLIENT_INVALID_REQUEST');
@@ -108,10 +108,10 @@ export class Witness {
         response:{httpStatus:observation.httpStatus,bodyHash:observation.responseHash,contentType:observation.contentType},
         timing:{latencyMs:observation.latencyMs},outcome,observedAt:observation.observedAt};
       await event(this.db,runId,'verification.completed',{outcome,httpStatus:observation.httpStatus});
-      const stored=await this.storage.persist(bundle);
+      const stored=await this.storage.persist(bundle) as any;
       await this.db.query('INSERT INTO evidence_records(execution_id,evidence_hash,evidence_uri,evidence_uri_hash,bundle) VALUES($1,$2,$3,$4,$5)',[executionId,stored.evidenceHash,stored.evidenceURI,stored.evidenceURIHash,JSON.stringify(bundle)]);
       await event(this.db,runId,'evidence.persisted',stored);
-      const nonce=BigInt((await this.db.query("SELECT nextval('witness_nonce') AS nonce")).rows[0].nonce);
+      const nonce=BigInt((await this.db.query("SELECT nextval('witness_nonce') AS nonce")).rows[0].nonce as number);
       const receipt={providerKey:id.providerKey,endpointKey:id.endpointKey,specHash:plan.candidate.specHash,payer:this.wallet,amountPaid:amount,
         paymentHash:settlement.transaction,requestHash:observation.requestHash,responseHash:observation.responseHash,evidenceHash:stored.evidenceHash,evidenceURIHash:stored.evidenceURIHash,
         latencyMs:observation.latencyMs,httpStatus:observation.httpStatus,outcome,observedAt:BigInt(observation.observedAt),nonce,providerAgentRegistry:providerIdentity?.registry??zeroAddress,providerAgentId:BigInt(providerIdentity?.agentId??'0')};
@@ -123,18 +123,18 @@ export class Witness {
     } finally {await lock.query('SELECT pg_advisory_unlock(hashtextextended($1,0))',[runId]);lock.release();}
   }
   async anchor(executionId:string) {
-    const row=(await this.db.query('SELECT * FROM execution_attempts WHERE id=$1',[executionId])).rows[0];
+    const row=(await this.db.query('SELECT * FROM execution_attempts WHERE id=$1',[executionId])).rows[0] as any;
     if(!row?.signed_receipt)throw new Error('SIGNED_RECEIPT_UNAVAILABLE');
-    const {receipt:r,signature,uri}=row.signed_receipt;
+    const {receipt:r,signature,uri}=(row.signed_receipt as unknown as {receipt:any,signature:string,uri:string});
     const receipt={...r,amountPaid:BigInt(r.amountPaid),observedAt:BigInt(r.observedAt),nonce:BigInt(r.nonce),providerAgentId:BigInt(r.providerAgentId)};
     let hash=row.arc_tx_hash as Hex|null;
-    if(!await this.client.readContract({address:this.registry,abi:receiptAnchorAbi,functionName:'anchored',args:[row.receipt_hash]})) {
+    if(!await this.client.readContract({address:this.registry,abi:receiptAnchorAbi,functionName:'anchored',args:[row.receipt_hash as Hex]})) {
       if(!hash) {
         // Multiple relayer operations use a DB lock; no local in-memory nonce assumptions.
         const connection=await this.db.connect();
         try {
           await connection.query("SELECT pg_advisory_lock(hashtextextended('xyx-relayer',0))");
-          const {request}=await this.client.simulateContract({address:this.registry,abi:receiptAnchorAbi,functionName:'anchorReceipt',args:[receipt,uri,signature],account:this.relayer.account!});
+          const {request}=await (this.client.simulateContract as any)({address:this.registry,abi:receiptAnchorAbi,functionName:'anchorReceipt',args:[receipt,uri,signature],account:this.relayer.account});
           hash=await this.relayer.writeContract(request);
           await this.db.query('UPDATE execution_attempts SET arc_tx_hash=$2 WHERE id=$1',[executionId,hash]);
           const tx=await this.client.waitForTransactionReceipt({hash,timeout:60000});if(tx.status!=='success')throw new Error('ANCHOR_REVERTED');
@@ -148,21 +148,22 @@ export class Witness {
       hash=logs[0]?.transactionHash??null;if(!hash)throw new Error('ANCHOR_EVENT_UNAVAILABLE');
     }
     await this.db.query("UPDATE execution_attempts SET state='RECEIPT_ANCHORED',arc_tx_hash=$2,finished_at=now() WHERE id=$1",[executionId,hash]);
-    await event(this.db,row.run_id,'receipt.anchored',{receiptHash:row.receipt_hash,arcTxHash:hash});
+    await event(this.db,row.run_id as string,'receipt.anchored',{receiptHash:row.receipt_hash,arcTxHash:hash});
     return {receiptHash:row.receipt_hash,arcTxHash:hash};
   }
   async resolveJob(jobId:string) {
     jobIdSchema.parse(jobId);
     const found=await this.db.query('SELECT * FROM protected_job_runs WHERE job_id=$1 AND commerce_address=$2',[jobId,this.commerce]);
     if(found.rows.length!==1)throw new Error('JOB_NOT_FOUND');
-    const runId=found.rows[0].id;
+    const runId=found.rows[0].id as string;
     return withJobLock(this.db,runId,async()=>{
-      const row=(await this.db.query('SELECT * FROM protected_job_runs WHERE id=$1',[runId])).rows[0];
+      const row=(await this.db.query('SELECT * FROM protected_job_runs WHERE id=$1',[runId])).rows[0] as any;
       const cached=await this.db.query("SELECT * FROM job_operations WHERE job_run_id=$1 AND operation='evaluate'",[runId]);
       if(cached.rows.length) {
         // Try reconciliation before blocking
         const { reconcileOperation } = await import('../../../packages/shared/src/job-operations.js');
-        const requestHash = JSON.stringify({specificationHash:hashJSON(createJobSchema.parse(row.specification)),deliverableHash:row.deliverable_hash});
+        const parsedInput=createJobSchema.parse(typeof row.specification==='string'?JSON.parse(row.specification):row.specification);
+        const requestHash = hashJSON({specificationHash:hashJSON(canonicalJobSpec(parsedInput)),deliverableHash:row.deliverable_hash});
         const reconciliation = await reconcileOperation(this.reconciler, cached.rows[0], requestHash);
         if (reconciliation.status === 'RECOVERED_CONFIRMED') {
           const result=z.object({jobId:jobIdSchema,decision:z.union([z.literal(1),z.literal(2)]),txHash:hex32}).parse(reconciliation.result);
@@ -179,7 +180,7 @@ export class Witness {
           throw new Error('JOB_RECONCILIATION_REQUIRED');
         }
       }
-      const input=createJobSchema.parse(row.specification);
+      const input=createJobSchema.parse(typeof row.specification==='string'?JSON.parse(row.specification):row.specification);
       const specification=canonicalJobSpec(input);
       const canonicalSpecHash=hashJSON(specification);
       assertJobBudget(input.budgetUsdc,this.maxJobUsdc);
@@ -190,30 +191,30 @@ export class Witness {
         state.client.toLowerCase()!==this.wallet.toLowerCase()||state.provider.toLowerCase()!==input.provider.toLowerCase()||
         state.budget!==atomicAmount(input.budgetUsdc,6)||state.description!==input.description+' | XYX specification: '+canonicalSpecHash)
         throw new Error('JOB_COMMITMENT_MISMATCH');
+      if(new Set([this.relayer.account!.address,this.signer.address,this.evaluatorSigner.address,this.wallet,state.provider].map(value=>value.toLowerCase())).size!==5)
+        throw new Error('SIGNER_SEPARATION_REQUIRED');
       if(!row.submission_tx_hash||!row.deliverable_uri||!row.deliverable_hash)throw new Error('DELIVERABLE_UNAVAILABLE');
       const submitted=await this.client.getTransactionReceipt({hash:hex32.parse(row.submission_tx_hash) as Hex});
       if(submitted.status!=='success')throw new Error('SUBMISSION_UNCONFIRMED');
       const observed=jobEvent(submitted.logs,this.commerce,'JobSubmitted');
-      if(observed.jobId!==BigInt(jobId)||String(observed.provider).toLowerCase()!==state.provider.toLowerCase()||
-        String(observed.deliverable).toLowerCase()!==row.deliverable_hash.toLowerCase())throw new Error('DELIVERABLE_COMMITMENT_MISMATCH');
+      if(observed.jobId!==BigInt(jobId)||(observed.provider as string).toLowerCase()!==state.provider.toLowerCase()||
+        (observed.deliverable as string).toLowerCase()!==row.deliverable_hash.toLowerCase())throw new Error('DELIVERABLE_COMMITMENT_MISMATCH');
       const deliverable=await this.storage.readJSON(row.deliverable_uri,row.deliverable_hash);
       const evaluated=evaluateDeliverable(input.evaluation,deliverable);
       const metaBlock=Number(await this.client.getBlockNumber());
       const meta=await this.client.getBlock({blockNumber:BigInt(metaBlock)});
-      const identities=new ERC8004Client(this.rpc);
-      const providerIdentity=await identities.resolve('https://xyx-provider.vercel.app',state.provider,BigInt(metaBlock));
       const bundle={version:'xyx-job-evidence-v1',jobId,commerce:this.commerce,submissionTxHash:row.submission_tx_hash,
         specification:{hash:canonicalSpecHash,input:row.specification,description:state.description},
-        participants:{client:state.client,provider:state.provider,evaluator:state.evaluator,providerIdentity},
-        chainState:{chainId:5042002,blockNumber:BigInt(metaBlock),blockHash:meta.hash,jobStatus:state.status,jobBudget:state.budget.toString()},
+        participants:{client:state.client,provider:state.provider,evaluator:state.evaluator},
+        chainState:{chainId:5042002,blockNumber:metaBlock,blockHash:meta.hash,jobStatus:state.status,jobBudget:state.budget.toString()},
         deliverable:{uri:row.deliverable_uri,hash:row.deliverable_hash,canonical:deliverable},
         evaluation:{kind:'exact-json-v1',decision:evaluated.decision,reasonHash:evaluated.reasonHash,deterministic:true},
-        ...evaluated,observedAt:BigInt(Math.floor(Date.now()/1000))};
-      const stored=await this.storage.persist(bundle);
-      const result=await jobOperation(this.db,runId,'evaluate',
+        ...evaluated,observedAt:Math.floor(Date.now()/1000)};
+      const stored=await this.storage.persist(bundle) as any;
+      const result=await jobOperation(this.db,runId as string,'evaluate',
         {specificationHash:canonicalSpecHash,deliverableHash:row.deliverable_hash},
         async()=>{
-        const nonce=BigInt((await this.db.query("SELECT nextval('evaluator_nonce') AS nonce")).rows[0].nonce);
+        const nonce=BigInt((await this.db.query("SELECT nextval('evaluator_nonce') AS nonce")).rows[0].nonce as number);
         const now=BigInt(Math.floor(Date.now()/1000));
         const rawMaxVerdictLifetime=await this.client.readContract({address:this.evaluator,abi:evaluatorAbi,functionName:'maxVerdictLifetime'});
         if(typeof rawMaxVerdictLifetime!=='bigint')throw new Error('UNEXPECTED_VERDICT_LIFETIME');
@@ -231,9 +232,26 @@ export class Witness {
             [runId,JSON.stringify(verdict,(_,v)=>typeof v==='bigint'?v.toString():v),signature,stored.evidenceURI]);
           const {request}=await this.client.simulateContract({address:this.evaluator,abi:evaluatorAbi,functionName:'resolveJob',args:[verdict,signature],account:this.relayer.account!});
           const txHash=await this.relayer.writeContract(request);
+          await this.reconciler.recordBroadcast(runId,'evaluate',txHash);
           await this.db.query('UPDATE protected_job_runs SET tx_hash=$2 WHERE id=$1',[runId,txHash]);
           const receipt=await this.client.waitForTransactionReceipt({hash:txHash,timeout:60000});
           if(receipt.status!=='success')throw new Error('VERDICT_TX_FAILED');
+          const verdictEvents=receipt.logs.flatMap(log=>{
+            if(log.address.toLowerCase()!==this.evaluator.toLowerCase())return [];
+            try {
+              const decoded=decodeEventLog({abi:evaluatorAbi,data:log.data,topics:log.topics,strict:true});
+              return decoded.eventName==='JobVerdictExecuted'?[decoded.args as unknown as Record<string,unknown>]:[];
+            } catch{return [];}
+          });
+          if(verdictEvents.length!==1)throw new Error('VERDICT_EVENT_UNVERIFIED');
+          const verdictEvent=verdictEvents[0];
+          if(String(verdictEvent.verdictHash).toLowerCase()!==hashTypedData({domain:verdictDomain(this.evaluator),types:verdictTypes,primaryType:'JobVerdict',message:verdict}).toLowerCase()||
+            String(verdictEvent.jobId)!==jobId||verdictEvent.decision!==evaluated.decision||
+            String(verdictEvent.evidenceHash).toLowerCase()!==stored.evidenceHash.toLowerCase()||
+            String(verdictEvent.reasonHash).toLowerCase()!==evaluated.reasonHash.toLowerCase()||
+            String(verdictEvent.attestor).toLowerCase()!==this.evaluatorSigner.address.toLowerCase())throw new Error('VERDICT_EVENT_MISMATCH');
+          const finalState=chainJobSchema.parse(await this.client.readContract({address:this.commerce,abi:commerceAbi,functionName:'getJob',args:[BigInt(jobId)]}));
+          if(finalState.status!==(evaluated.decision===1?3:4))throw new Error('FINAL_JOB_STATE_MISMATCH');
           return {jobId,decision:evaluated.decision,txHash};
         }finally{try{await connection.query("SELECT pg_advisory_unlock(hashtextextended('xyx-relayer',0))");}finally{connection.release();}}
       },this.reconciler);

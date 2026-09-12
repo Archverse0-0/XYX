@@ -1,558 +1,482 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { Hex } from 'viem';
 import {
-  ARC_TESTNET_CHAIN_ID,
-  ARC_TESTNET_CHAIN_ID_HEX,
-  ARC_TESTNET_RPC_URL,
-  BUYER,
+  BUDGET,
   COMMERCE,
-  DELIVERABLE_HASH,
+  BUYER,
   EVALUATOR,
   PROVIDER_WALLET,
-  actionCalldata,
-  actionConfirmation,
-  assertProviderJob,
-  decodeJob,
+  ARC_TESTNET_CHAIN_ID_HEX,
+  ARC_TESTNET_CHAIN_ID,
+  ARC_TESTNET_RPC_URL,
   expectedChain,
   expectedProvider,
-  readJobCalldata,
   validJobId,
   type ProviderAction,
 } from '../../lib/protected-job-provider';
+import { ProviderWalletService, type TxState } from '../../lib/provider-wallet';
+import { normalizeTask } from '../../lib/task';
+import { hashJSON } from '../../../../packages/shared/src/index';
 
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+type WalletProvider = { isRabby?:boolean; request:(request:{method:string;params?:unknown[]})=>Promise<unknown>;
+  on?:(event:string,listener:()=>void)=>void; removeListener?:(event:string,listener:()=>void)=>void };
 
-type TxState = 'IDLE' | 'SUBMITTED' | 'CONFIRMED' | 'REVERTED' | 'FAILED';
-type WalletConnectionState =
-  | 'DISCOVERING'
-  | 'READY'
-  | 'CONNECTING'
-  | 'CONNECTED'
-  | 'RABBY_NOT_FOUND'
-  | 'FAILED';
-
-type WalletProvider = {
-  isRabby?: boolean;
-  info?: { uuid?: string };
-  request: (request: { method: string; params?: unknown[] }) => Promise<unknown>;
-  on?: (
-    event: 'accountsChanged' | 'chainChanged' | 'disconnect',
-    listener: (...args: unknown[]) => void,
-  ) => void;
-  removeListener?: (
-    event: 'accountsChanged' | 'chainChanged' | 'disconnect',
-    listener: (...args: unknown[]) => void,
-  ) => void;
-};
-
-type Eip6963Announcement = {
-  info?: { rdns?: string; uuid?: string };
-  provider?: WalletProvider;
-};
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function rabbyProvider(): WalletProvider | null {
+  const injected=(window as unknown as {ethereum?:WalletProvider&{providers?:WalletProvider[]}}).ethereum;
+  return injected?.providers?.find(provider=>provider.isRabby) ?? (injected?.isRabby?injected:null) ?? null;
 }
 
-function rpcErrorCode(error: unknown): number | undefined {
-  if (error && typeof error === 'object' && 'code' in error && typeof error.code === 'number') {
-    return error.code;
-  }
-  return undefined;
-}
-
-/**
- * Find the Rabby provider among injected providers.
- *
- * Priority:
- *   1. Provider with `isRabby` flag.
- *   2. Provider whose `info.uuid` contains 'rabb'.
- *   3. null (not found).
- */
-function findRabbyProvider(): WalletProvider | null {
-  if (typeof window === 'undefined') return null;
-
-  const injected = (window as { ethereum?: WalletProvider }).ethereum;
-  if (!injected) return null;
-
-  const ethereum = injected as WalletProvider & { providers?: WalletProvider[] };
-  const candidates: WalletProvider[] = [...(ethereum.providers ?? []), injected];
-
-  const byFlag = candidates.find((item) => item.isRabby);
-  if (byFlag) return byFlag;
-
-  const byUuid = candidates.find((item) => /rabb/i.test(item.info?.uuid ?? ''));
-  if (byUuid) return byUuid;
-
-  return null;
-}
-
-function isRabbyAnnouncement(announcement: Eip6963Announcement): boolean {
-  return Boolean(
-    announcement.provider?.isRabby ||
-      /rabb/i.test(announcement.provider?.info?.uuid ?? '') ||
-      /rabby/i.test(announcement.info?.rdns ?? '') ||
-      /rabby/i.test(announcement.info?.uuid ?? ''),
-  );
-}
-
-async function discoverRabbyProvider(): Promise<WalletProvider | null> {
-  if (typeof window === 'undefined') return null;
-
-  const injected = findRabbyProvider();
-  if (injected) return injected;
-
-  return new Promise((resolve) => {
-    let settled = false;
-    let timeoutId: number | undefined;
-
-    const finish = (provider: WalletProvider | null) => {
-      if (settled) return;
-      settled = true;
-      window.removeEventListener('eip6963:announceProvider', onAnnounce);
-      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
-      resolve(provider);
-    };
-
-    const onAnnounce = (event: Event) => {
-      const announcement = (event as CustomEvent<Eip6963Announcement>).detail;
-      if (announcement?.provider && isRabbyAnnouncement(announcement)) {
-        finish(announcement.provider);
-      }
-    };
-
-    window.addEventListener('eip6963:announceProvider', onAnnounce);
-    // EIP-6963 announcements normally arrive immediately, but a short grace
-    // period makes discovery reliable while an extension is still unlocking.
-    timeoutId = window.setTimeout(() => finish(null), 1_000);
-    window.dispatchEvent(new Event('eip6963:requestProvider'));
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
-
-export default function ProtectedJobProviderClient() {
-  // --- state ---------------------------------------------------------------
-  const [provider, setProvider] = useState<WalletProvider | null>(null);
-  const [account, setAccount] = useState<string>();
-  const [chain, setChain] = useState<string>();
-  const [jobId, setJobId] = useState('186075');
+// ─── URL Parameters (validated, never trusted) ──────────────────
+function useValidatedParams() {
+  const [jobId, setJobId] = useState<string>('');
   const [action, setAction] = useState<ProviderAction>('setBudget');
-  const [job, setJob] = useState<string>('PENDING');
-  const [simulation, setSimulation] = useState<string>('PENDING');
-  const [gas, setGas] = useState<string>();
-  const [simulationKey, setSimulationKey] = useState<string>();
-  const inspectionVersion = useRef(0);
-  const [confirmation, setConfirmation] = useState('');
-  const [txState, setTxState] = useState<TxState>('IDLE');
-  const [hash, setHash] = useState<string>();
+  const [urlError, setUrlError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const rawJobId = params.get('jobId') ?? '';
+    const rawAction = params.get('action') ?? '';
+
+    // Validate jobId
+    if (rawJobId && !validJobId(rawJobId)) {
+      setUrlError('INVALID_JOB_ID');
+      return;
+    }
+
+    // Validate action
+    if (rawAction && !['setBudget', 'submit'].includes(rawAction)) {
+      setUrlError('INVALID_ACTION');
+      return;
+    }
+
+    setJobId(rawJobId);
+    if (rawAction === 'submit') setAction('submit');
+    setUrlError(null);
+  }, []);
+
+  return { jobId, action, urlError };
+}
+
+// ─── Client Component ───────────────────────────────────────────
+export default function ProtectedJobProviderClient() {
+  const { jobId: urlJobId, action: urlAction, urlError } = useValidatedParams();
+  const [jobId, setJobId] = useState(urlJobId);
+  const [action, setAction] = useState<ProviderAction>(urlAction);
+  const [job, setJob] = useState<any>(null);
+  const [simulation, setSimulation] = useState<string>('IDLE');
   const [error, setError] = useState<string>();
-  const [discovered, setDiscovered] = useState<WalletProvider[]>([]);
-  const [connectionState, setConnectionState] = useState<WalletConnectionState>('DISCOVERING');
-  const announcedRabbyRef = useRef<WalletProvider | null>(null);
+  const [txState, setTxState] = useState<TxState>('IDLE');
+  const [hash, setHash] = useState<Hex>();
+  const [confirmation, setConfirmation] = useState('');
+  const [requiredConfirmation, setRequiredConfirmation] = useState('');
+  const [taskText, setTaskText] = useState('');
+  const [provider, setProvider] = useState<string | null>(null);
+  const [accountMatches, setAccountMatches] = useState(false);
+  const [chainMatches, setChainMatches] = useState(false);
+  const [sendEnabled, setSendEnabled] = useState(false);
+  const [blockers, setBlockers] = useState<string[]>([]);
 
-  // --- derived -------------------------------------------------------------
-  const accountMatches = expectedProvider(account);
-  const chainMatches = expectedChain(chain);
-  const valid = validJobId(jobId);
-  const calldata = useMemo(
-    () => (valid ? actionCalldata(action, BigInt(jobId)) : undefined),
-    [action, jobId, valid],
-  );
-  const required = valid ? actionConfirmation(action, jobId) : '';
-  const currentSimulationKey = JSON.stringify([account, chain, jobId, action]);
+  // Provider wallet service instance
+  const walletServiceRef = useRef<ProviderWalletService | null>(null);
+  const injectedProviderRef = useRef<WalletProvider | null>(null);
 
-  const sendEnabled =
-    Boolean(provider) &&
-    Boolean(accountMatches) &&
-    Boolean(chainMatches) &&
-    Boolean(valid) &&
-    Boolean(calldata) &&
-    simulation === 'SIMULATION PASSED' &&
-    simulationKey === currentSimulationKey &&
-    Boolean(gas) &&
-    confirmation === required;
+  // Sync URL params when they change
+  useEffect(() => {
+    if (urlJobId !== undefined) setJobId(urlJobId);
+    if (urlAction) setAction(urlAction);
+  }, [urlJobId, urlAction]);
 
-  // Keep the server render and the browser's first render identical. Reading
-  // window.ethereum here causes a hydration mismatch when Rabby is installed.
-  const rabbyDetected =
-    connectionState === 'READY' ||
-    connectionState === 'CONNECTING' ||
-    connectionState === 'CONNECTED';
-  // --- wallet actions ------------------------------------------------------
-  const refresh = async (activeProvider: WalletProvider) => {
-    const [accounts, currentChainId] = await Promise.all([
-      activeProvider.request({ method: 'eth_accounts' }) as Promise<unknown>,
-      activeProvider.request({ method: 'eth_chainId' }) as Promise<unknown>,
-    ]);
-    setAccount(
-      Array.isArray(accounts) && typeof accounts[0] === 'string' ? accounts[0] : undefined,
-    );
-    setChain(typeof currentChainId === 'string' ? currentChainId : undefined);
-  };
+  // Initialize wallet service
+  useEffect(() => {
+    const service = new ProviderWalletService({
+      erc8183Address: COMMERCE,
+      providerWallet: PROVIDER_WALLET,
+      evaluatorAddress: EVALUATOR,
+      buyerAddress: BUYER,
+      budget: BUDGET,
+      arcRpcUrl: ARC_TESTNET_RPC_URL,
+    });
+    walletServiceRef.current = service;
+    return () => service.reset();
+  }, []);
 
-  const connect = async () => {
+  useEffect(() => {
+    walletServiceRef.current?.invalidateSimulation();
+    setSimulation('IDLE');
+    setConfirmation('');
+    setRequiredConfirmation('');
+    setTxState('IDLE');
+  }, [jobId, action, taskText, provider, chainMatches]);
+
+  // ── Wallet Connection ──────────────────────────────────────────
+  const connectWallet = async () => {
     setError(undefined);
-    setConnectionState('DISCOVERING');
-    const selected = announcedRabbyRef.current ?? (await discoverRabbyProvider());
-    if (!selected) {
-      setConnectionState('RABBY_NOT_FOUND');
-      setError('RABBY_NOT_DETECTED: install or unlock Rabby, then click Connect Rabby again.');
-      return;
-    }
     try {
-      announcedRabbyRef.current = selected;
-      setConnectionState('CONNECTING');
-      await selected.request({ method: 'eth_requestAccounts' });
+      const wallet=rabbyProvider();
+      if(!wallet)throw new Error('RABBY_NOT_DETECTED');
+      const accounts=await wallet.request({method:'eth_requestAccounts'});
+      if(!Array.isArray(accounts)||typeof accounts[0]!=='string')throw new Error('NO_ACCOUNT_SELECTED');
+      injectedProviderRef.current=wallet;
+      const selected = accounts[0];
       setProvider(selected);
-      await refresh(selected);
-      setConnectionState('CONNECTED');
+
+      // Verify it matches the expected provider wallet
+      const matches = expectedProvider(selected);
+      setAccountMatches(matches);
+
+      if (!matches) {
+        setError(`WALLET_MISMATCH: connected ${selected.slice(0, 8)}... but expected ${PROVIDER_WALLET.slice(0, 8)}...`);
+      }
     } catch (connectError) {
-      setConnectionState('FAILED');
-      setError(`CONNECT_FAILED: ${errorMessage(connectError)}`);
+      setError(`CONNECT_FAILED: ${connectError instanceof Error ? connectError.message : 'unknown'}`);
     }
   };
 
-  const switchToArc = async () => {
-    if (!provider) return;
-    setError(undefined);
-    try {
-      await provider.request({
-        method: 'wallet_switchEthereumChain',
-        params: [{ chainId: ARC_TESTNET_CHAIN_ID_HEX }],
-      });
-      await refresh(provider);
-    } catch (switchError) {
-      const code = rpcErrorCode(switchError);
-      if (code !== 4902) {
-        setError(`NETWORK_SWITCH_FAILED: ${errorMessage(switchError)}`);
-        return;
-      }
+  // ── Chain Verification ─────────────────────────────────────────
+  useEffect(() => {
+    const wallet=injectedProviderRef.current;
+    if (!provider || !wallet) return;
+
+    const checkChain = async () => {
       try {
-        await provider.request({
-          method: 'wallet_addEthereumChain',
-          params: [
-            {
-              chainId: ARC_TESTNET_CHAIN_ID_HEX,
-              chainName: 'Arc Testnet',
-              nativeCurrency: { name: 'USDC', symbol: 'USDC', decimals: 18 },
-              rpcUrls: [ARC_TESTNET_RPC_URL],
-              blockExplorerUrls: ['https://testnet.arcscan.app'],
-            },
-          ],
-        });
-        await provider.request({
-          method: 'wallet_switchEthereumChain',
-          params: [{ chainId: ARC_TESTNET_CHAIN_ID_HEX }],
-        });
-        await refresh(provider);
-      } catch (addError) {
-        setError(`ARC_NETWORK_ADD_FAILED: ${errorMessage(addError)}`);
-      }
-    }
-  };
-
-  // --- on-chain inspection ------------------------------------------------
-  const inspect = async () => {
-    const version = ++inspectionVersion.current;
-    setSimulationKey(undefined);
-    if (!provider || !accountMatches || !chainMatches || !valid) {
-      setSimulation('PENDING');
-      setGas(undefined);
-      return;
-    }
-    setError(undefined);
-    setSimulation('RUNNING');
-    setGas(undefined);
-    try {
-      const raw = await provider.request({
-        method: 'eth_call',
-        params: [{ to: COMMERCE, data: readJobCalldata(BigInt(jobId)) }, 'latest'],
-      });
-      if (typeof raw !== 'string') throw new Error('JOB_READ_INVALID');
-
-      const decoded = decodeJob(raw as `0x${string}`);
-      assertProviderJob(decoded, BigInt(jobId), action);
-      if (version !== inspectionVersion.current) return;
-
-      setJob(
-        JSON.stringify({
-          status: decoded.status,
-          budget: decoded.budget.toString(),
-          client: decoded.client,
-          provider: decoded.provider,
-          evaluator: decoded.evaluator,
-        }),
-      );
-
-      const tx = { from: account, to: COMMERCE, value: '0x0', data: calldata };
-      await provider.request({ method: 'eth_call', params: [tx, 'latest'] });
-
-      const estimate = await provider.request({ method: 'eth_estimateGas', params: [tx] });
-      if (typeof estimate !== 'string') throw new Error('GAS_ESTIMATE_INVALID');
-      if (version !== inspectionVersion.current) return;
-
-      setGas(estimate);
-      setSimulationKey(currentSimulationKey);
-      setSimulation('SIMULATION PASSED');
-    } catch (e) {
-      if (version !== inspectionVersion.current) return;
-      setJob('FAILED');
-      setSimulation(`SIMULATION FAILED: ${errorMessage(e)}`);
-    }
-  };
-
-  const verifyPostState = async () => {
-    if (!provider || !valid) return;
-    const raw = await provider.request({
-      method: 'eth_call',
-      params: [{ to: COMMERCE, data: readJobCalldata(BigInt(jobId)) }, 'latest'],
-    });
-    if (typeof raw !== 'string') throw new Error('POST_TRANSACTION_JOB_READ_INVALID');
-
-    const decoded = decodeJob(raw as `0x${string}`);
-    const participantsMatch =
-      decoded.id === BigInt(jobId) &&
-      decoded.client.toLowerCase() === BUYER.toLowerCase() &&
-      decoded.provider.toLowerCase() === PROVIDER_WALLET.toLowerCase() &&
-      decoded.evaluator.toLowerCase() === EVALUATOR.toLowerCase();
-
-    if (!participantsMatch) throw new Error('POST_TRANSACTION_PARTICIPANTS_MISMATCH');
-    if (action === 'setBudget' && (decoded.status !== 0 || decoded.budget !== 10000n))
-      throw new Error('POST_TRANSACTION_BUDGET_STATE_MISMATCH');
-    if (action === 'submit' && decoded.status !== 2)
-      throw new Error('POST_TRANSACTION_SUBMIT_STATE_MISMATCH');
-
-    setJob(
-      JSON.stringify({
-        status: decoded.status,
-        budget: decoded.budget.toString(),
-        client: decoded.client,
-        provider: decoded.provider,
-        evaluator: decoded.evaluator,
-      }),
-    );
-  };
-
-  const send = async () => {
-    if (!provider || !sendEnabled || !calldata) return;
-    try {
-      const tx = { from: account, to: COMMERCE, value: '0x0', data: calldata, gas };
-      const result = await provider.request({ method: 'eth_sendTransaction', params: [tx] });
-      if (typeof result !== 'string') throw new Error('TRANSACTION_HASH_INVALID');
-
-      setHash(result);
-      setTxState('SUBMITTED');
-
-      for (let i = 0; i < 60; i++) {
-        await new Promise((r) => setTimeout(r, 1000));
-        const receipt = await provider.request({
-          method: 'eth_getTransactionReceipt',
-          params: [result],
-        });
-        if (!receipt) continue;
-
-        if (
-          typeof receipt === 'object' &&
-          receipt &&
-          'status' in receipt &&
-          (receipt as { status: string }).status === '0x1'
-        ) {
-          await verifyPostState();
-          setTxState('CONFIRMED');
-          return;
+        const chainId = await wallet.request({ method: 'eth_chainId' });
+        const matches = expectedChain(typeof chainId==='string'?chainId:undefined);
+        setChainMatches(matches);
+        if (!matches) {
+          setError(`WRONG_CHAIN: expected Arc Testnet (${ARC_TESTNET_CHAIN_ID_HEX}), got ${chainId}`);
         }
-
-        setTxState('REVERTED');
-        return;
+      } catch {
+        setChainMatches(false);
+        setError('CHAIN_CHECK_FAILED');
       }
-
-      setTxState('FAILED');
-      setError('RECEIPT_PENDING: transaction was submitted but no receipt arrived within 60 seconds.');
-    } catch (e) {
-      setTxState('FAILED');
-      setError(`SEND_FAILED: ${errorMessage(e)}`);
-    }
-  };
-
-  // --- effects -------------------------------------------------------------
-  // Wait until mounted (client-side) before inspecting or reading window.
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
-
-  // Inspect when provider, account, chain, jobId, or action changes.
-  useEffect(() => {
-    if (!mounted) return;
-    void inspect();
-    return () => { inspectionVersion.current += 1; };
-  }, [mounted, provider, account, chain, jobId, action]);
-
-  // Wallet event listeners + EIP-6963 discovery.
-  useEffect(() => {
-    if (!mounted) return;
-    let cancelled = false;
-    const injected = (window as { ethereum?: WalletProvider }).ethereum;
-    const ethereum = injected as (WalletProvider & { providers?: WalletProvider[] }) | undefined;
-    const candidates: WalletProvider[] = ethereum ? [...(ethereum.providers ?? []), ethereum] : [];
-    const rabby = findRabbyProvider();
-    if (rabby) {
-      announcedRabbyRef.current = rabby;
-      setConnectionState('READY');
-    }
-    const discoveredList = candidates.filter((item) => !item.isRabby || item === rabby);
-    setDiscovered(discoveredList);
-
-    const onEip6963Announce = (event: Event) => {
-      const custom = event as CustomEvent<Eip6963Announcement>;
-      const announcement = custom.detail ?? {};
-      const announced = announcement.provider;
-      if (!announced) return;
-
-      if (isRabbyAnnouncement(announcement)) {
-        announcedRabbyRef.current = announced;
-        setConnectionState('READY');
-      }
-      setDiscovered((current) => (current.some((provider) => provider === announced) ? current : [...current, announced]));
     };
 
-    window.addEventListener('eip6963:announceProvider', onEip6963Announce);
-    window.dispatchEvent(new Event('eip6963:requestProvider'));
-    void discoverRabbyProvider().then((discoveredRabby) => {
-      if (cancelled) return;
-      if (discoveredRabby) {
-        announcedRabbyRef.current = discoveredRabby;
-        setConnectionState('READY');
-        setDiscovered((current) =>
-          current.some((candidate) => candidate === discoveredRabby)
-            ? current
-            : [...current, discoveredRabby],
-        );
-      } else if (!announcedRabbyRef.current) {
-        setConnectionState('RABBY_NOT_FOUND');
-      }
-    });
+    checkChain();
 
-    return () => {
-      cancelled = true;
-      window.removeEventListener('eip6963:announceProvider', onEip6963Announce);
-    };
-  }, [mounted]);
-
-  // Subscribe to the provider actually selected through EIP-6963, including
-  // wallets that are not exposed through window.ethereum.
-  useEffect(() => {
-    if (!provider) return;
-
-    const onAccountsChanged = (...args: unknown[]) => {
-      const accounts = args[0] as string[] | undefined;
-      setAccount(Array.isArray(accounts) && typeof accounts[0] === 'string' ? accounts[0] : undefined);
-    };
-    const onChainChanged = (...args: unknown[]) => {
-      const chainId = args[0];
-      setChain(typeof chainId === 'string' ? chainId : undefined);
-    };
-
-    provider.on?.('accountsChanged', onAccountsChanged);
-    provider.on?.('chainChanged', onChainChanged);
-    return () => {
-      provider.removeListener?.('accountsChanged', onAccountsChanged);
-      provider.removeListener?.('chainChanged', onChainChanged);
-    };
+    // Listen for chain changes
+    const handler = () => checkChain();
+    wallet.on?.('chainChanged', handler);
+    return () => wallet.removeListener?.('chainChanged', handler);
   }, [provider]);
 
-  // --- render -------------------------------------------------------------
-  const blockers = [
-    !provider || !account ? 'Hubungkan Rabby dan izinkan akses akun lewat Connect Rabby.' : '',
-    account && !accountMatches ? `Pilih akun provider ${PROVIDER_WALLET} di Rabby.` : '',
-    provider && !chainMatches ? 'Ganti jaringan lewat Switch to Arc Testnet.' : '',
-    !valid ? 'Masukkan Confirmed Job ID yang valid.' : '',
-    simulation !== 'SIMULATION PASSED' || simulationKey !== currentSimulationKey || !gas
-      ? `Simulasi belum lolos: ${simulation}. Setelah wallet dan jaringan benar, klik Periksa ulang transaksi.` : '',
-    confirmation !== required ? `Ketik persis ${required || 'konfirmasi untuk Job ID yang valid'} pada kolom konfirmasi.` : '',
-  ].filter(Boolean);
+  // ── Job Inspection ─────────────────────────────────────────────
+  const inspect = async () => {
+    if (!jobId || !action || !walletServiceRef.current) return;
 
+    setError(undefined);
+    setSimulation('RUNNING');
+
+    try {
+      // Validate jobId format before proceeding
+      if (!validJobId(jobId)) {
+        throw new Error('INVALID_JOB_ID');
+      }
+
+      const service = walletServiceRef.current;
+
+      // Step 1: Inspect job state
+      const inspection = await service.inspectJob(jobId, action);
+      setJob(inspection.job);
+
+      // Step 2: Verify participants
+      if (!inspection.participantsValid) {
+        throw new Error(`JOB_PARTICIPANTS_MISMATCH: ${inspection.validationErrors.join(', ')}`);
+      }
+
+      // Step 3: Verify chain
+      if (!inspection.chainMatch) {
+        throw new Error('WRONG_CHAIN: expected Arc Testnet');
+      }
+
+      // Step 4: Verify provider
+      if (!inspection.providerMatch) {
+        throw new Error('PROVIDER_MISMATCH: job provider does not match configured wallet');
+      }
+
+      // Step 5: Verify state and budget
+      if (!inspection.stateValid) {
+        const statusLabels = ['Open', 'Funded', 'Submitted', 'Completed', 'Rejected', 'Expired'];
+        throw new Error(`JOB_NOT_READY: status=${statusLabels[inspection.job.status] ?? inspection.job.status}, budget=${inspection.job.budget}`);
+      }
+
+      if (!inspection.budgetValid) {
+        throw new Error(`BUDGET_MISMATCH: expected ${BUDGET.toString()}, got ${inspection.job.budget.toString()}`);
+      }
+
+      // Step 6: Simulate
+      const deliverableHash = action === 'submit' ? hashJSON(normalizeTask({text:taskText})) : undefined;
+
+      const simResult = await service.simulate(action, jobId, action === 'submit' ? deliverableHash as `0x${string}` | undefined : undefined);
+
+      if (!simResult.success) {
+        throw new Error(`SIMULATION_FAILED: ${simResult.error}`);
+      }
+
+      setSimulation('SIMULATION_READY');
+      setRequiredConfirmation(service.requiresConfirmation(action, jobId));
+      setConfirmation('');
+    } catch (e) {
+      setJob(null);
+      setSimulation('FAILED');
+      setError(e instanceof Error ? e.message : 'INSPECTION_FAILED');
+    }
+  };
+
+  // ── Send Transaction ───────────────────────────────────────────
+  const send = async () => {
+    if (!walletServiceRef.current || !jobId || !action) return;
+
+    const service = walletServiceRef.current;
+
+    // Explicit confirmation required
+    const expectedConfirmation = service.requiresConfirmation(action, jobId);
+    if (confirmation !== expectedConfirmation) {
+      setError(`CONFIRMATION_MISMATCH: expected "${expectedConfirmation}"`);
+      return;
+    }
+
+    setError(undefined);
+    setTxState('PREPARING');
+
+    try {
+      // Prepare calldata
+      const deliverableHash = action === 'submit' ? hashJSON(normalizeTask({text:taskText})) : undefined;
+
+      const calldata = service.prepareCalldata(action, jobId, deliverableHash);
+
+      // Broadcast via wallet (EIP-6963 — use the connected wallet, not a hardcoded provider)
+      if (!provider) throw new Error('NO_WALLET_CONNECTED');
+
+      setTxState('AWAITING_WALLET');
+
+      const wallet=injectedProviderRef.current;
+      if(!wallet)throw new Error('RABBY_NOT_CONNECTED');
+      const [currentAccounts,currentChain]=await Promise.all([
+        wallet.request({method:'eth_accounts'}),wallet.request({method:'eth_chainId'}),
+      ]);
+      if(!Array.isArray(currentAccounts)||typeof currentAccounts[0]!=='string'||!expectedProvider(currentAccounts[0]))throw new Error('WALLET_MISMATCH');
+      if(!expectedChain(typeof currentChain==='string'?currentChain:undefined))throw new Error('WRONG_CHAIN');
+      const latestSimulation=await service.simulate(action,jobId,deliverableHash);
+      if(!latestSimulation.success)throw new Error(`SIMULATION_FAILED: ${latestSimulation.error}`);
+      const txHash = await wallet.request({
+        method: 'eth_sendTransaction',
+        params: [{
+          from: provider,
+          to: COMMERCE,
+          data: calldata,
+          value: '0x0',
+        }],
+      });
+
+      setHash(txHash as Hex);
+      setTxState('BROADCAST');
+
+      // Broadcast and verify
+      const result = await service.broadcastAndVerify(txHash as Hex);
+
+      if (result.receiptStatus === 'success' && result.eventsVerified && result.postStateValid) {
+        setTxState('CONFIRMED');
+        // Trigger job state re-read for UI update
+        await inspect();
+      } else if (result.receiptStatus === 'reverted') {
+        setTxState('FAILED');
+        setError(`TX_REVERTED: ${txHash}`);
+      } else {
+        setTxState('RECONCILIATION_REQUIRED');
+        setError(`RECONCILIATION_REQUIRED: ${result.error ?? 'state ambiguous'}`);
+      }
+    } catch (e) {
+      const errorMsg = e instanceof Error ? e.message : 'SEND_FAILED';
+
+      if (errorMsg.includes('user rejected') || errorMsg.includes('ACTION_REJECTED')) {
+        setTxState('WALLET_REJECTED');
+      } else {
+        setTxState('FAILED');
+      }
+      setError(`SEND_FAILED: ${errorMsg}`);
+    }
+  };
+
+  // ── Compute send eligibility ──────────────────────────────────
+  useEffect(() => {
+    const newBlockers: string[] = [];
+    if (!provider) newBlockers.push('connect wallet');
+    if (!accountMatches) newBlockers.push('wallet must match provider');
+    if (!chainMatches) newBlockers.push('switch to Arc Testnet');
+    if (!job) newBlockers.push('inspect job');
+    if (simulation !== 'SIMULATION_READY') newBlockers.push('simulation ready');
+    if (!requiredConfirmation || confirmation !== requiredConfirmation) newBlockers.push('type exact confirmation');
+    setBlockers(newBlockers);
+    setSendEnabled(newBlockers.length === 0 && txState === 'IDLE');
+  }, [provider, accountMatches, chainMatches, job, simulation, confirmation, requiredConfirmation, txState]);
+
+  // ── Error classification ──────────────────────────────────────
+  const errorClassification = useMemo(() => {
+    if (!error) return null;
+    if (error.includes('INVALID_JOB_ID')) return 'VALIDATION_ERROR';
+    if (error.includes('WRONG_CHAIN')) return 'CHAIN_MISMATCH';
+    if (error.includes('WALLET_MISMATCH') || error.includes('PROVIDER_MISMATCH')) return 'SIGNER_MISMATCH';
+    if (error.includes('JOB_PARTICIPANTS_MISMATCH')) return 'VALIDATION_ERROR';
+    if (error.includes('SIMULATION_FAILED')) return 'SIMULATION_FAILED';
+    if (error.includes('TX_REVERTED')) return 'ARC_TX_FAILED';
+    if (error.includes('RECONCILIATION_REQUIRED')) return 'RECONCILIATION_REQUIRED';
+    if (error.includes('CONFIRMATION_MISMATCH')) return 'VALIDATION_ERROR';
+    return 'UNKNOWN_ERROR';
+  }, [error]);
+
+  // ── Render ────────────────────────────────────────────────────
   return (
-    <main style={{ fontFamily: 'system-ui', margin: '2rem auto', maxWidth: 900 }}>
+    <main style={{ maxWidth: '720px', margin: '0 auto', padding: '2rem', fontFamily: 'system-ui, sans-serif' }}>
       <h1>XYX Protected Job Provider</h1>
-      <p>
-        <strong>Development-only.</strong> No private key is accepted; Rabby must approve every send.
+      <p style={{ color: '#666', fontSize: '0.875rem' }}>
+        Provider wallet: {PROVIDER_WALLET.slice(0, 8)}...{PROVIDER_WALLET.slice(-6)}
+        &nbsp;|&nbsp; Chain: Arc Testnet ({ARC_TESTNET_CHAIN_ID_HEX})
       </p>
 
-      <button
-        type="button"
-        disabled={connectionState === 'CONNECTING'}
-        onClick={() => void connect()}
-      >
-        {connectionState === 'CONNECTING' ? 'Waiting for Rabby…' : 'Connect Rabby'}
-      </button>
-      <p>
-        <strong>Wallet connection:</strong> {connectionState}
-      </p>
-      {error && <p role="alert" style={{ color: '#b42318' }}>{error}</p>}
-      {provider && !chainMatches && (
-        <button type="button" onClick={() => void switchToArc()}>Switch to Arc Testnet</button>
+      {urlError && (
+        <div role="alert" style={{ background: '#fff3cd', padding: '1rem', borderRadius: '4px', marginBottom: '1rem' }}>
+          <strong>URL Parameter Error:</strong> {urlError}
+        </div>
       )}
 
-      <p>Wallet: {account ?? 'Not connected'} / expected: {PROVIDER_WALLET}</p>
-      <p>Chain: {chain ?? 'Not connected'} / expected: {ARC_TESTNET_CHAIN_ID_HEX}</p>
+      {/* Job Parameters */}
+      <section style={{ marginBottom: '1.5rem' }}>
+        <h2>Job Parameters</h2>
+        <div style={{ display: 'flex', gap: '1rem', marginBottom: '0.5rem' }}>
+          <label>
+            Job ID:
+            <input
+              type="text"
+              value={jobId}
+              onChange={(e) => setJobId(e.target.value)}
+              placeholder="Enter a job ID"
+              style={{ marginLeft: '0.5rem', padding: '0.25rem' }}
+            />
+          </label>
+          <label>
+            Action:
+            <select
+              value={action}
+              onChange={(e) => setAction(e.target.value as ProviderAction)}
+              style={{ marginLeft: '0.5rem', padding: '0.25rem' }}
+            >
+              <option value="setBudget">setBudget</option>
+              <option value="submit">submit</option>
+            </select>
+          </label>
+        </div>
+        {action === 'submit' && (
+          <label>
+            Task text:
+            <textarea value={taskText} onChange={event=>setTaskText(event.target.value)} maxLength={4096}
+              placeholder="Enter the exact task input used to build the canonical deliverable" />
+          </label>
+        )}
+        <p><button type="button" onClick={() => void inspect()} disabled={!jobId || !action}>
+          {simulation === 'RUNNING' ? 'Inspecting...' : 'Inspect Job'}
+        </button></p>
+      </section>
 
-      <p>
-        <strong>Diagnostics:</strong> {discovered.length} injected provider{discovered.length === 1 ? '' : 's'} discovered.
-        {rabbyDetected ? ' Rabby found.' : ' Rabby not found.'}
-      </p>
+      {/* Job State */}
+      {job && (
+        <section style={{ marginBottom: '1.5rem', background: '#f6f8fa', padding: '1rem', borderRadius: '4px' }}>
+          <h2>Job State (Read-Only)</h2>
+          <table style={{ width: '100%', fontSize: '0.875rem' }}>
+            <tbody>
+              <tr><td>Job ID</td><td>{job.id.toString()}</td></tr>
+              <tr><td>Client</td><td>{job.client}</td></tr>
+              <tr><td>Provider</td><td>{job.provider}</td></tr>
+              <tr><td>Evaluator</td><td>{job.evaluator}</td></tr>
+              <tr><td>Budget</td><td>{job.budget.toString()}</td></tr>
+              <tr><td>Status</td><td>{['Open', 'Funded', 'Submitted', 'Completed', 'Rejected', 'Expired'][job.status] ?? job.status}</td></tr>
+              <tr><td>Expires At</td><td>{job.expiredAt.toString()}</td></tr>
+              <tr><td>Description</td><td>{job.description}</td></tr>
+            </tbody>
+          </table>
+        </section>
+      )}
 
-      <label>
-        Confirmed Job ID{' '}
-        <input value={jobId} onChange={(event) => setJobId(event.target.value)} />
-      </label>
+      {/* Simulation Status */}
+      <section style={{ marginBottom: '1.5rem' }}>
+        <h2>Simulation Status</h2>
+        <p id="sim-status" aria-live="polite">
+          {simulation === 'IDLE' && 'Not yet inspected'}
+          {simulation === 'RUNNING' && 'Running simulation...'}
+          {simulation === 'SIMULATION_READY' && 'Simulation succeeded — ready to send'}
+          {simulation === 'FAILED' && 'Simulation failed'}
+        </p>
+        {simulation === 'SIMULATION_READY' && (
+          <p style={{ color: '#1a7f37' }}>Calldata prepared and the call simulation succeeded. Type the confirmation phrase below to proceed.</p>
+        )}
+      </section>
 
-      <p>
-        <button type="button" onClick={() => setAction('setBudget')}>Set budget</button>{' '}
-        <button type="button" onClick={() => setAction('submit')}>Submit deliverable</button>
-      </p>
+      {/* Error */}
+      {error && (
+        <div role="alert" style={{ background: '#fef2f2', padding: '1rem', borderRadius: '4px', marginBottom: '1rem' }}>
+          <p><strong>{errorClassification ?? 'Error'}:</strong> {error}</p>
+        </div>
+      )}
 
-      <p>Onchain job: {job}</p>
+      {/* Confirmation */}
+      {simulation === 'SIMULATION_READY' && (
+        <section style={{ marginBottom: '1.5rem' }}>
+          <h2>Explicit Confirmation</h2>
+          <label id="confirmation-label">
+            Type <code>{requiredConfirmation}</code> to proceed:
+            <input
+              value={confirmation}
+              onChange={(event) => setConfirmation(event.target.value)}
+              autoComplete="off"
+              style={{ marginLeft: '0.5rem', padding: '0.25rem', width: '300px' }}
+            />
+          </label>
+          <p id="send-status" aria-live="polite" style={{ marginTop: '0.5rem' }}>
+            {sendEnabled ? 'Ready to send — wallet will prompt for approval.' : 'Cannot send yet. Complete the following:'}
+          </p>
+          {!sendEnabled && <ul>{blockers.map((b) => <li key={b}>{b}</li>)}</ul>}
+          <p style={{ marginTop: '0.5rem' }}>
+            <button type="button" disabled={!provider || !accountMatches || !chainMatches || simulation === 'SIMULATION_READY' || simulation === 'RUNNING'} onClick={() => void inspect()}>
+              {simulation === 'SIMULATION_READY' ? 'Inspecting...' : 'Re-inspect Job'}
+            </button>
+          </p>
+          <button type="button" aria-describedby="send-status" disabled={!sendEnabled} onClick={() => void send()}>
+            Send Transaction
+          </button>
+        </section>
+      )}
 
-      <h2>Transaction Plan</h2>
-      <p>Action: {action}</p>
-      <p>To: {COMMERCE}</p>
-      <p>
-        Calldata: <code style={{ overflowWrap: 'anywhere' }}>{calldata ?? 'Valid confirmed job ID required'}</code>
-      </p>
-      <p>Deliverable hash: {action === 'submit' ? DELIVERABLE_HASH : 'N/A'}</p>
-      <p>Simulation: {simulation}</p>
-      <p>Gas estimate: {gas ?? 'PENDING'}</p>
+      {/* Transaction State */}
+      <section style={{ marginBottom: '1.5rem' }}>
+        <h2>Transaction State</h2>
+        <p>Current state: <strong>{txState}</strong></p>
+        {txState === 'WALLET_REJECTED' && <p style={{ color: '#b45309' }}>You rejected the transaction in your wallet.</p>}
+        {txState === 'RECONCILIATION_REQUIRED' && <p style={{ color: '#b45309' }}>State is ambiguous — manual reconciliation required.</p>}
+        {txState === 'CONFIRMED' && <p style={{ color: '#1a7f37' }}>Transaction confirmed and verified on-chain.</p>}
+        {txState === 'FAILED' && <p style={{ color: '#b42318' }}>Transaction failed.</p>}
+        {hash && <p>Transaction hash: <code>{hash}</code></p>}
+      </section>
 
-      <label>
-        Type <code>{required || 'the required confirmation'}</code>{' '}
-        <input
-          value={confirmation}
-          onChange={(event) => setConfirmation(event.target.value)}
-          autoComplete="off"
-        />
-      </label>
+      {/* Connection */}
+      {!provider && (
+        <section style={{ marginBottom: '1.5rem' }}>
+          <h2>Wallet Connection</h2>
+          <button type="button" onClick={() => void connectWallet()}>Connect Wallet (Rabby)</button>
+        </section>
+      )}
 
-      <p id="send-status" aria-live="polite">{sendEnabled ? 'Siap dikirim — Rabby akan meminta persetujuan.' : 'Belum bisa dikirim. Selesaikan langkah berikut:'}</p>
-      {!sendEnabled && <ul>{blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul>}
-      <p><button type="button" disabled={!provider || !accountMatches || !chainMatches || !valid || simulation === 'RUNNING'} onClick={() => void inspect()}>
-        {simulation === 'RUNNING' ? 'Memeriksa transaksi…' : 'Periksa ulang transaksi'}
-      </button></p>
-
-      <button type="button" aria-describedby="send-status" disabled={!sendEnabled} onClick={() => void send()}>
-        Send with Rabby
-      </button>
-
-      <p>Transaction state: {txState}</p>
-      {hash && <p>Transaction hash: {hash}</p>}
+      {/* Wallet Status */}
+      {provider && (
+        <section style={{ marginBottom: '1.5rem', background: '#f0fdf4', padding: '1rem', borderRadius: '4px' }}>
+          <h2>Wallet Status</h2>
+          <p>Connected: {provider}</p>
+          <p>Provider match: {accountMatches ? 'YES' : 'NO'}</p>
+          <p>Chain match: {chainMatches ? 'YES' : 'NO'}</p>
+          {!accountMatches && <p style={{ color: '#b42318' }}>Connected wallet does not match expected provider wallet ({PROVIDER_WALLET.slice(0, 8)}...)</p>}
+          {!chainMatches && <p style={{ color: '#b42318' }}>Switch to Arc Testnet (chain ID {ARC_TESTNET_CHAIN_ID})</p>}
+        </section>
+      )}
     </main>
   );
 }
