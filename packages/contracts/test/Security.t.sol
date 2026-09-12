@@ -14,7 +14,7 @@ interface Vm {
     function prank(address) external;
 }
 
-// Test-only fixture, expressly permitted by PRD section 104. Never used by the live path.
+// Test-only fixture for isolated contract tests. Never used by the live acceptance path.
 contract TestCommerce is IAgenticCommerce {
     address public evaluator;
     uint8 public status;

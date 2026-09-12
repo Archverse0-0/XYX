@@ -1,0 +1,59 @@
+{
+  "network": "arc-testnet",
+  "chainId": 5042002,
+  "status": "DEPLOYED_LIVE",
+  "note": "This manifest contains PUBLIC metadata only. No secrets, private keys, or API keys.",
+  "contracts": {
+    "XYXEvidenceRegistry": {
+      "address": "0xfB94329c89Af2FC541bEf32e1ec99cbed87a39F2",
+      "deploymentTx": "0x41d3b6651b83df8883570abd30a1c6ce89b11267818d367100ef3b2afee447ca",
+      "startBlock": 61238484,
+      "status": "DEPLOYED_LIVE",
+      "maxReceiptAge": 86400
+    },
+    "XYXEvaluator": {
+      "address": "0xCEBFedAc66B0fFfAD452D3f1B356D1A3120dB233",
+      "deploymentTx": "0x6ec0407bb51b50fdad652822a14ed510e460dada542f33d666a7fdb1d603d0f6",
+      "startBlock": 61238490,
+      "erc8183Target": "0x0747EEf0706327138c69792bF28Cd525089e4583",
+      "status": "DEPLOYED_LIVE",
+      "maxVerdictLifetime": 300
+    }
+  },
+  "erc8183": {
+    "referenceProxy": "0x0747EEf0706327138c69792bF28Cd525089e4583",
+    "source": "Arc Testnet verified explorer",
+    "status": "DEPLOYED_ON_ARC"
+  },
+  "erc8004": {
+    "identityRegistry": "0x8004A818BFB912233c491871b3d84c89A494BD9e",
+    "status": "DEPLOYED_ON_ARC"
+  },
+  "usdc": {
+    "address": "0x3600000000000000000000000000000000000000",
+    "decimals": 6,
+    "symbol": "USDC"
+  },
+  "graph": {
+    "subgraphId": null,
+    "deploymentId": "QmaFDTDR41XFiatVmRnjoi3siZBXW9n4zAhCanU6T5CFrQ",
+    "endpoint": "https://api.studio.thegraph.com/query/1759975/xyx-arc/v0.1.0",
+    "startBlock": 61238484,
+    "status": "DEPLOYED_LIVE"
+  },
+  "wallets": {
+    "circleWallet": {
+      "address": "0x55763d498fd057d17ffcc2fb540789ce76f4f085",
+      "status": "DEPLOYED_LIVE"
+    }
+  },
+  "signers": {
+    "deployer": "0xD42edDe4274A91814666B795708BDAc74c8B14d6",
+    "admin": "0xD42edDe4274A91814666B795708BDAc74c8B14d6",
+    "witnessAttestor": "0x15cd0E9055BD775eF69000438e756E4476562E8F",
+    "evaluatorAttestor": "0x644C11572E3792bd1dE5959D09ECBc6f63304277",
+    "pauser": "0xD42edDe4274A91814666B795708BDAc74c8B14d6"
+  },
+  "gitCommit": "1fb117120c72c38e18d96fc8c2ff2824a09441be",
+  "deployedAt": "2026-09-09T12:30:54.000Z"
+}

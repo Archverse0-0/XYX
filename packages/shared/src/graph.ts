@@ -15,6 +15,17 @@ export class GraphClient {
     if(data._meta.hasIndexingErrors||data._meta.deployment!==this.deployment) throw new Error('BLOCKED_TRUST_DATA');
     return data._meta;
   }
+  async validations(agentId:string,block:number) {
+    const schema=z.array(z.object({id:z.string(),validator:z.string().regex(/^0x[0-9a-fA-F]{40}$/),response:z.number().int().min(0).max(100),updatedAt:z.coerce.number().int().safe().nonnegative()}));
+    const all:z.infer<typeof schema>=[];let cursor='';
+    for(let page=0;page<200;page++) {
+      const data=await this.query<{validations:unknown}>(`query($agent:String!,$cursor:ID!,$block:Int!){validations(first:1000,orderBy:id,orderDirection:asc,block:{number:$block},where:{agent:$agent,id_gt:$cursor}){id validator response updatedAt}}`,{agent:agentId,cursor,block});
+      const rows=schema.parse(data.validations);all.push(...rows);
+      if(rows.length<1000)return all;
+      const next=rows.at(-1)!.id;if(next<=cursor)throw new Error('GRAPH_PAGINATION_ERROR');cursor=next;
+    }
+    throw new Error('EVIDENCE_LIMIT_EXCEEDED');
+  }
   async evidence(keys:string[],now:number,block:number):Promise<RiskReceipt[]> {
     const receipts:RiskReceipt[]=[];
     for(const key of keys) {

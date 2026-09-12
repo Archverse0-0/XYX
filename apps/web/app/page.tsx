@@ -1,3 +1,5 @@
-import Link from 'next/link';
-import { Login } from '../components/client';
-export default function Home(){return <><section className="hero"><div className="eyebrow">INFRASTRUCTURE FOR AGENTS THAT TRANSACT</div><h1>Evidence before trust.<br/>Verification after purchase.</h1><p>Agents choose services using observed transaction evidence, pay within your policy, and preserve results that can be audited.</p><Link className="button" href="/agent">Open Buyer Agent ↗</Link><Login/></section><div className="grid three"><section className="panel"><div className="eyebrow">01 / EXPOSE</div><h2>Traceable evidence</h2><p className="muted">Request, response, and payment commitments are anchored on Arc and indexed by The Graph.</p></section><section className="panel"><div className="eyebrow">02 / YIELD</div><h2>Decisions with context</h2><p className="muted">Reliability is shown with sample size, confidence, and buyer-address diversity.</p></section><section className="panel"><div className="eyebrow">03 / EXECUTE</div><h2>Your authority stays yours</h2><p className="muted">Set the budget. Open Purchase pays directly; Protected Jobs use ERC-8183 escrow.</p></section></div><div className="notice">Open Purchase does not provide XYX escrow or refunds. Protection status applies only when the transaction actually uses ERC-8183.</div></>;}
+import Experience from '../components/cinematic/Experience';
+
+export default function Home() {
+  return <Experience />;
+}

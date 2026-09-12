@@ -1,0 +1,14 @@
+:root {
+  color-scheme: dark;
+  --bg: #090b0c; --surface: #101315; --panel: #131719; --surface-raised: #1b2023;
+  --line: #2b3135; --line-soft: #20262a; --text: #eeeeda; --white: #f0f2f1;
+  --muted: #a2a9ad; --quiet: #757f86; --accent: #d7e8a8;
+  --bad: #f2a69b; --warning: #d9c798; --success: #bad6b2;
+  --font-body: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --font-display: Arial, 'Helvetica Neue', sans-serif;
+  --font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  --space-1: .25rem; --space-2: .5rem; --space-3: .75rem; --space-4: 1rem;
+  --space-5: 1.5rem; --space-6: 2rem; --space-7: 3rem; --space-8: 4rem;
+  --radius: 3px; --content-width: 1440px;
+  --ease: cubic-bezier(.22, 1, .36, 1); --duration: 220ms;
+}

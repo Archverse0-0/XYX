@@ -996,6 +996,23 @@ export class Job extends Entity {
     }
   }
 
+  get evidenceHash(): Bytes | null {
+    let value = this.get("evidenceHash");
+    if (!value || value.kind == ValueKind.NULL) {
+      return null;
+    } else {
+      return value.toBytes();
+    }
+  }
+
+  set evidenceHash(value: Bytes | null) {
+    if (!value) {
+      this.unset("evidenceHash");
+    } else {
+      this.set("evidenceHash", Value.fromBytes(<Bytes>value));
+    }
+  }
+
   get reasonHash(): Bytes | null {
     let value = this.get("reasonHash");
     if (!value || value.kind == ValueKind.NULL) {

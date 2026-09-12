@@ -1,0 +1,13 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    ".opencode/plugins/graphify.js"
+  ],
+  "mcp": {
+    "graphify": {
+      "type": "local",
+      "command": ["/home/pupulion/.local/share/uv/tools/graphifyy/bin/graphify-mcp", "graphify-out/graph.json"],
+      "enabled": true
+    }
+  }
+}

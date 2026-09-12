@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { CircleAdapter, type DiscoveryItem, type PaymentTerms } from '../../../packages/circle-adapter/src/index.js';
-import { hashJSON, serviceIdentity, atomicAmount, defaultPreference, preferences, type PurchaseIntent } from '../../../packages/shared/src/index.js';
+import { hashJSON, serviceIdentity, atomicAmount, defaultPreference, preferences, acceptedValidatorsSchema, type PurchaseIntent } from '../../../packages/shared/src/index.js';
+import { ERC8004Client, validationScore, type ProviderIdentity } from '../../../packages/erc8004/client.js';
 import { evaluate, type Candidate } from '../../../packages/risk-engine/src/index.js';
 import { GraphClient } from '../../../packages/shared/src/graph.js';
 import { arcClient, usdcBalance, ARC_USDC } from '../../../packages/shared/src/chain.js';
@@ -10,8 +11,8 @@ import { Planner } from './planner.js';
 import type { Address } from 'viem';
 
 export const policySchema=z.object({maxPriceUsdc:z.number().finite().positive().max(10000),minimumTrust:z.number().min(0).max(1).optional(),
-  minimumEvidenceCount:z.number().int().nonnegative().optional(),requireProtection:z.boolean(),preference:preferences.default(defaultPreference)}).strict();
-export type ExecutionPlan={item:DiscoveryItem;body:unknown;terms:PaymentTerms;requirements:unknown;candidate:Candidate};
+  minimumEvidenceCount:z.number().int().nonnegative().optional(),requireProtection:z.boolean(),preference:preferences.default(defaultPreference),acceptedValidators:acceptedValidatorsSchema.optional()}).strict();
+export type ExecutionPlan={item:DiscoveryItem;body:unknown;terms:PaymentTerms;requirements:unknown;candidate:Candidate;providerIdentity?:ProviderIdentity|null};
 export class BuyerRuntime {
   readonly circle:CircleAdapter;
   constructor(readonly db:DB,readonly graph:GraphClient,readonly rpc:string,readonly planner:Planner,readonly wallet:Address,readonly witnessURL:string,readonly internalToken:string,readonly maxLag:number){this.circle=new CircleAdapter(wallet);}
@@ -35,6 +36,14 @@ export class BuyerRuntime {
     const block=await client.getBlock({blockNumber:BigInt(meta.block.number)});
     if(block.hash?.toLowerCase()!==meta.block.hash?.toLowerCase())throw new Error('BLOCKED_TRUST_DATA');
     const head=Number(await client.getBlockNumber());const now=Number(block.timestamp);
+    if(head<meta.block.number||head-meta.block.number>this.maxLag)throw new Error('BLOCKED_TRUST_DATA');
+    const identities=new ERC8004Client(this.rpc);
+    await Promise.all(plans.map(async plan=>{
+      plan.providerIdentity=await identities.resolve(plan.item.resource,plan.terms.seller,BigInt(meta.block.number));
+      if(plan.providerIdentity&&intent.acceptedValidators?.length) {
+        plan.candidate.validation=validationScore(await this.graph.validations(plan.providerIdentity.agentId,meta.block.number),intent.acceptedValidators,now);
+      }
+    }));
     const receipts=await this.graph.evidence(plans.map(p=>p.candidate.endpointKey),now,meta.block.number);
     const decision=evaluate({intent,candidates:plans.map(p=>p.candidate),receipts,now,chainHead:head,indexedBlock:meta.block.number,maxGraphLagBlocks:this.maxLag,policyVersion:'xyx-balanced-v1'});
     return {plans,rejections,receipts,decision};
@@ -67,9 +76,13 @@ export class BuyerRuntime {
       const result=await response.json();await event(this.db,runId,'run.completed',result);
       await this.db.query("UPDATE agent_runs SET status='COMPLETED',finished_at=now() WHERE id=$1",[runId]);
     } catch(error) {
-      const code=error instanceof Error?error.message:'RUN_FAILED';
-      await this.db.query("UPDATE agent_runs SET status='FAILED',error_code=$2,finished_at=now() WHERE id=$1 AND status NOT IN ('COMPLETED','CANCELLED')",[runId,code]);
-      await event(this.db,runId,'run.failed',{code});
+      const attempt=await this.db.query('SELECT state FROM execution_attempts WHERE run_id=$1',[runId]);
+      const uncertain=attempt.rowCount!==0;
+      const cancelled=!uncertain&&error instanceof Error&&error.message==='CANCELLED';
+      const code=uncertain?'EXECUTION_REQUIRES_RECONCILIATION':cancelled?'CANCELLED':'RUN_STOPPED';
+      const status=uncertain?'RECONCILIATION_REQUIRED':cancelled?'CANCELLED':'FAILED';
+      await this.db.query("UPDATE agent_runs SET status=$3,error_code=$2,finished_at=now() WHERE id=$1 AND status NOT IN ('COMPLETED','CANCELLED')",[runId,code,status]);
+      await event(this.db,runId,uncertain?'run.reconciliation_required':cancelled?'run.cancelled':'run.failed',{code});
     }
   }
 }

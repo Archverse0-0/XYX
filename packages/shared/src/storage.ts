@@ -4,7 +4,16 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 export const poolFor=(url:string)=>new pg.Pool({connectionString:url,max:10,connectionTimeoutMillis:5000,statement_timeout:15000});
 export type DB=ReturnType<typeof poolFor>;
-export async function migrate(db:DB) {await db.query(await readFile(fileURLToPath(new URL('../../../apps/api/migrations/001_initial.sql',import.meta.url)),'utf8'));}
+export async function migrate(db:DB) {
+  const client=await db.connect();
+  try {
+    await client.query("SELECT pg_advisory_lock(hashtextextended('xyx-migrations',0))");
+    for(const file of ['001_initial.sql','002_job_operations.sql','003_reconciliation.sql']) {
+      await client.query(await readFile(fileURLToPath(new URL('../../../apps/api/migrations/'+file,import.meta.url)),'utf8'));
+    }
+  } catch(error) { await client.query('ROLLBACK');throw error; }
+  finally {try {await client.query("SELECT pg_advisory_unlock(hashtextextended('xyx-migrations',0))");} finally {client.release();}}
+}
 export async function event(db:DB,runId:string,type:string,data:unknown) {
   await db.query('INSERT INTO run_events(run_id,type,data) VALUES($1,$2,$3)',[runId,type,JSON.stringify(data)]);
 }

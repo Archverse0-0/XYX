@@ -99,7 +99,8 @@ export class CircleAdapter {
       throw new Error('CIRCLE_DEVELOPER_WALLET_NOT_LIVE');
     return {wallets};
   }
-  async execute(signature:string,parameters:string[],contract:string):Promise<{id:string;state?:string;txHash?:string}> {
+  async execute(signature:string,parameters:string[],contract:string,idempotencyKey:string=randomUUID()):Promise<{id:string;state?:string;txHash?:string}> {
+    z.string().uuid().parse(idempotencyKey);
     if(!/^0x[0-9a-fA-F]{40}$/.test(contract)||!signature||signature.includes(';')||signature.includes(' '))throw new Error('INVALID_CONTRACT_CALL');
     for(const parameter of parameters)if(parameter.length>4096||/[\r\n]/.test(parameter))throw new Error('INVALID_CONTRACT_PARAMETER');
     const client=this.requireDeveloperWallet();
@@ -110,7 +111,7 @@ export class CircleAdapter {
       walletAddress:this.wallet,
       blockchain:'ARC-TESTNET',
       fee:{type:'level',config:{feeLevel:'MEDIUM'}},
-      idempotencyKey:randomUUID(),
+      idempotencyKey,
     });
     const initial=z.object({id:z.string(),state:z.string()}).parse(created.data);
     let state=initial.state;

@@ -52,10 +52,13 @@ export const preferences = z.object({
   reliabilityWeight: z.number().min(0).max(1), priceWeight: z.number().min(0).max(1),
   validationWeight: z.number().min(0).max(1), protectionWeight: z.number().min(0).max(1),
 }).strict().refine(w => Math.abs(Object.values(w).reduce((a, b) => a + b, 0) - 1) < 1e-9, 'WEIGHTS_MUST_SUM_TO_ONE');
+export const acceptedValidatorsSchema=z.array(z.object({address,weight:z.number().finite().positive().max(1)}).strict()).max(20)
+  .refine(rows=>new Set(rows.map(r=>r.address.toLowerCase())).size===rows.length,'DUPLICATE_VALIDATOR');
 export const intentSchema = z.object({
   capability: z.string().min(1).max(200), query: z.string().max(10000).optional(),
   maxPriceUsdc: z.number().finite().positive().max(10000), minimumTrust: z.number().min(0).max(1).optional(),
   minimumEvidenceCount: z.number().int().nonnegative().optional(), requireProtection: z.boolean(), preference: preferences,
+  acceptedValidators:acceptedValidatorsSchema.optional(),
 }).strict();
 export type PurchaseIntent = z.infer<typeof intentSchema>;
 export const defaultPreference = { reliabilityWeight: 0.7, priceWeight: 0.2, validationWeight: 0.1, protectionWeight: 0 };

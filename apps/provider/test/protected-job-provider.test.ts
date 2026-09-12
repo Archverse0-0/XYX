@@ -1,0 +1,9 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { BUYER, BUDGET, COMMERCE, DELIVERABLE_HASH, EVALUATOR, actionCalldata, actionConfirmation, assertProviderJob, expectedChain, expectedProvider, protectedJobToolAvailable, type ChainJob } from '../lib/protected-job-provider';
+
+const job:ChainJob={id:7n,client:BUYER,provider:'0x7ea90Ac2A2bA5fF6c71e7E9D23037D64AbD2b4da',evaluator:EVALUATOR,description:'test',budget:0n,expiredAt:9n,status:0,hook:'0x0000000000000000000000000000000000000000'};
+test('external provider EOA is accepted while Circle buyer remains distinct',()=>{assert.notEqual(BUYER.toLowerCase(),job.provider.toLowerCase());assert.doesNotThrow(()=>assertProviderJob(job,7n,'setBudget'));assert.equal(expectedProvider(job.provider),true);assert.equal(expectedChain('0x4cef52'),true);});
+test('provider tool fails closed for wrong participant or state',()=>{assert.throws(()=>assertProviderJob({...job,provider:BUYER},7n,'setBudget'),/PARTICIPANTS/);assert.throws(()=>assertProviderJob({...job,client:job.provider},7n,'setBudget'),/PARTICIPANTS/);assert.throws(()=>assertProviderJob({...job,budget:BUDGET},7n,'setBudget'),/NOT_OPEN/);assert.throws(()=>assertProviderJob(job,7n,'submit'),/NOT_FUNDED/);assert.throws(()=>assertProviderJob({...job,status:1,budget:BUDGET},7n,'setBudget'),/NOT_OPEN/);assert.doesNotThrow(()=>assertProviderJob({...job,status:1,budget:BUDGET},7n,'submit'));assert.equal(expectedChain('0x1'),false);});
+test('provider calldata and typed confirmations are deterministic',()=>{assert.match(actionCalldata('setBudget',7n),/^0xdd4ae9d4/);assert.match(actionCalldata('submit',7n),/^0x9e63798d/);assert.equal(DELIVERABLE_HASH.length,66);assert.equal(actionConfirmation('setBudget','7'),'SET BUDGET 7');assert.equal(actionConfirmation('submit','7'),'SUBMIT DELIVERABLE 7');});
+test('provider tool is unavailable in production',()=>assert.equal(protectedJobToolAvailable('production'),false));

@@ -1,0 +1,80 @@
+{
+  "session": "8",
+  "component": "protected-job-preflight",
+  "classification": "READY_FOR_LIVE_PROTECTED_JOB_EXECUTION",
+  "observedAt": "2026-09-11T14:52:18Z",
+  "network": "arc-testnet",
+  "chainId": 5042002,
+  "erc8183": {
+    "proxy": "0x0747EEf0706327138c69792bF28Cd525089e4583",
+    "implementation": "0xA316fd02827242D537F84730F8a37D0BA5fd351a"
+  },
+  "usdc": {
+    "address": "0x3600000000000000000000000000000000000000",
+    "decimals": 6,
+    "budgetAtomic": "10000"
+  },
+  "actors": {
+    "buyer": "0x55763d498fd057d17ffcc2fb540789ce76f4f085",
+    "provider": "0x7ea90Ac2A2bA5fF6c71e7E9D23037D64AbD2b4da",
+    "providerAgentId": "894335",
+    "evaluator": "0xCEBFedAc66B0fFfAD452D3f1B356D1A3120dB233",
+    "identityRegistry": "0x8004A818BFB912233c491871b3d84c89A494BD9e"
+  },
+  "job": {
+    "task": "Normalize this text:   hello   protected   XYX",
+    "expectedResult": "hello protected XYX",
+    "deliverableHash": "0xee019961f0e9210659bcfc6968b2f4fb97337e459468548ea821e815f83586f5",
+    "canonicalSpecificationHash": "0xfc1455ab974b7777a501fa04acfa291f6a50024c4b4c658a6807eeea92f598c6",
+    "expiryIncludedInSpecificationHash": false,
+    "budgetUsdc": "0.01",
+    "evaluationKind": "exact-json-v1"
+  },
+  "determinism": {
+    "sameSemanticDifferentExpiryStable": true,
+    "changedSemanticChangesHash": true,
+    "authoritativeSpecificationHash": "0xfc1455ab974b7777a501fa04acfa291f6a50024c4b4c658a6807eeea92f598c6",
+    "previousTransientHash": "0x8bf4a16ad6a6a8f0ac44c18079cc6617ab563c507574759bc8a8da3a930e5b4c",
+    "previousTransientHashSuperseded": true
+  },
+  "preflight": {
+    "simulationPassed": true,
+    "gasEstimate": "300333",
+    "transactionBroadcast": false,
+    "realJobId": null,
+    "txHash": null
+  },
+  "regression": {
+    "nodeTests": 189,
+    "solidityTests": 24,
+    "providerTests": 18,
+    "typecheck": "PASS",
+    "providerBuild": "PASS",
+    "gitDiffCheck": "PASS",
+    "secretScan": "PASS"
+  },
+  "liveReadOnlyChecks": {
+    "arcChain": "PASS",
+    "erc8183Code": "PASS",
+    "usdcCode": "PASS",
+    "circleBuyer": "PASS",
+    "circleBuyerBalanceUsdc": "20",
+    "erc8183AllowancePreApproval": "0",
+    "providerHealth": "HTTP 200",
+    "providerTask": "HTTP 200",
+    "erc8004Resolver": "agent 894335 resolves successfully",
+    "graphValidationRecords": 0,
+    "witnessConfigWithoutCircleCredentials": "PASS",
+    "providerRabbyDevelopment": "HTTP 200",
+    "providerRabbyProduction": "HTTP 404"
+  },
+  "claims": {
+    "jobCreated": false,
+    "jobFunded": false,
+    "providerSubmission": false,
+    "witnessEvidence": false,
+    "evaluatorResolution": false,
+    "settlement": false,
+    "p0Complete": false
+  }
+}
