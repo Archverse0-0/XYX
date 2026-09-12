@@ -19,3 +19,6 @@ deployments/local/
 .circle/
 recovery/
 node_modules/
+
+.claude/
+.opencode/
