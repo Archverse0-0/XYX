@@ -1,6 +1,7 @@
 node_modules/
 .env
 .env.*
+.envo
 !.env.example
 !.env.witness.example
 .next/
