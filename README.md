@@ -90,7 +90,7 @@ DISCOVER
 
 ## Documentation Authority
 
-The current forward implementation reference is `docs/XYX_TECHNICAL_PRD_v1.2.md`.
+The current forward implementation reference is [`docs/XYX_TECHNICAL_PRD_v1.2_FINAL.md`](docs/XYX_TECHNICAL_PRD_v1.2_FINAL.md).
 
 When sources conflict, use this order:
 
@@ -99,7 +99,7 @@ When sources conflict, use this order:
 3. Technical PRD v1.2.
 4. Implementation backlog.
 
-`docs/XYX_TECHNICAL_PRD_v1.1.md` is historical. Verified execution history is in `docs/sessions/` and `artifacts/live-evidence/`. Everything in `docs/archive/` is historical only.
+`docs/archive/XYX_TECHNICAL_PRD_v1.1.md` is historical. Verified execution history is in `docs/sessions/` and `artifacts/live-evidence/`. Everything in `docs/archive/` is historical only.
 
 ## Current Status
 
@@ -293,6 +293,49 @@ ERC-8183 owns escrow. XYX does not add a custom escrow.
 - `XYXEvidenceRegistry`
 - `XYXEvaluator`
 
+## Local Development
+
+The local topology is intentionally loopback-only:
+
+```text
+web       http://127.0.0.1:3000
+API       http://127.0.0.1:3001
+Witness   http://127.0.0.1:3002
+provider  http://127.0.0.1:3003/protected-job-provider
+```
+
+Use separate terminals:
+
+```bash
+npm run api
+npm run witness
+npm run dev:web -- --hostname 127.0.0.1 --port 3000
+cd apps/provider && npm run dev -- --hostname 127.0.0.1 --port 3003
+```
+
+The API defaults to port `3001`, which is the web proxy target. Set
+`API_INTERNAL_URL` only when intentionally using a non-default API listener.
+The Node runtime prefers IPv4 for PostgreSQL DNS resolution; this is a
+repository-local compatibility setting for dual-stack developer networks, not a
+system-wide IPv6 change.
+
+Required runtime configuration is loaded by the process from `.env` (API) and
+`.env.witness` (Witness). Do not copy private signer material into the API
+environment. Protected Job evidence/evaluation additionally requires the
+separate Witness and IPFS capability configuration.
+
+Useful validation commands:
+
+```bash
+npm test
+npm run typecheck
+npm run test:contracts
+npm run build:contracts
+npm run build:web
+npm run doctor
+npm run verify:live -- --report-only
+```
+
 ## Repository Structure
 
 ```text
@@ -310,8 +353,7 @@ packages/
 docs/
   sessions/
   archive/
-  XYX_TECHNICAL_PRD_v1.1.md
-  XYX_TECHNICAL_PRD_v1.2.md
+  XYX_TECHNICAL_PRD_v1.2_FINAL.md
 
 artifacts/
   live-evidence/

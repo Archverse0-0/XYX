@@ -27,6 +27,7 @@
   },
   "erc8004": {
     "identityRegistry": "0x8004A818BFB912233c491871b3d84c89A494BD9e",
+    "providerAgentId": "894335",
     "status": "DEPLOYED_ON_ARC"
   },
   "usdc": {
@@ -45,6 +46,11 @@
     "circleWallet": {
       "address": "0x55763d498fd057d17ffcc2fb540789ce76f4f085",
       "status": "DEPLOYED_LIVE"
+    },
+    "provider": {
+      "address": "0x7ea90Ac2A2bA5fF6c71e7E9D23037D64AbD2b4da",
+      "erc8004AgentId": "894335",
+      "status": "REGISTERED_LIVE"
     }
   },
   "signers": {

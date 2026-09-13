@@ -93,7 +93,7 @@ async function main() {
 
   // 4. Simulate transaction
   try {
-    const simulation = await client.simulateContract({
+    const simulation: any = await client.simulateContract({
       account: PROVIDER,
       address: ERC_8183,
       abi: setBudgetAbi,

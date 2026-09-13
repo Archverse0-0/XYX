@@ -8,8 +8,8 @@ test('JSON serialization redacts sentinel secrets', () => {
   assert.equal(output.includes('TEST_INTERNAL_TOKEN_123'), false);
 });
 
-test('zero receipts are NOT_YET_PROVEN', () => {
-  assert.equal(classifyReceiptCount(0).status, 'NOT_YET_PROVEN');
+test('zero receipts are NOT_APPLICABLE (no Open Purchase data)', () => {
+  assert.equal(classifyReceiptCount(0).status, 'NOT_APPLICABLE');
 });
 
 test('receipt field mismatch fails closed', () => {
@@ -60,17 +60,17 @@ test('receipt proof wires Graph rows to the configured registry event and transa
   }) as typeof fetch;
   const mockLog = { args: { receiptHash: row.id, endpointKey: row.endpointKey, providerKey: row.providerKey, payer: row.payer, specHash: row.specHash, paymentHash: row.paymentHash, requestHash: row.requestHash, responseHash: row.responseHash, evidenceHash: row.evidenceHash, evidenceURIHash: row.evidenceURIHash } as any, transactionHash: '0x' + 'ff'.repeat(32), blockNumber: 10n };
   const client = { getLogs: async () => [mockLog], getTransactionReceipt: async () => ({ status: 'success' }) };
-  const checks = await verifyReceiptProof('https://graph.test', client as any, '0x' + 'bb'.repeat(20), 'PASS');
+  const checks = await verifyReceiptProof('https://graph.test', client as any, '0x' + 'bb'.repeat(20));
   assert.equal(checks.find(c => c.id === 'receipt.arc_graph_match')?.status, 'PASS');
-  try { const failed = { ...client, getTransactionReceipt: async () => ({ status: 'reverted' }) }; const checks = await verifyReceiptProof('https://graph.test', failed as any, '0x' + 'bb'.repeat(20), 'PASS'); assert.equal(checks.find(c => c.id === 'receipt.arc_transaction')?.status, 'FAIL'); } finally { globalThis.fetch = oldFetch; }
+  try { const failed = { ...client, getTransactionReceipt: async () => ({ status: 'reverted' }) }; const checks = await verifyReceiptProof('https://graph.test', failed as any, '0x' + 'bb'.repeat(20)); assert.equal(checks.find(c => c.id === 'receipt.arc_transaction')?.status, 'FAIL'); } finally { globalThis.fetch = oldFetch; }
 });
 
-test('overall status is strict for FAIL, BLOCKED, and NOT_YET_PROVEN', () => {
+test('overall status is strict for FAIL, UNKNOWN, and NOT_APPLICABLE', () => {
   assert.equal(overallStatus([{ id: 'x', status: 'PASS', detail: '' }]), 'PASS');
   assert.equal(overallStatus([{ id: 'x', status: 'FAIL', detail: '' }]), 'FAIL');
-  assert.equal(overallStatus([{ id: 'x', status: 'BLOCKED', detail: '' }]), 'BLOCKED');
-  assert.equal(overallStatus([{ id: 'x', status: 'NOT_YET_PROVEN', detail: '' }]), 'NOT_YET_PROVEN');
-  assert.equal(exitCodeForStatus('PASS'), 0); assert.equal(exitCodeForStatus('FAIL'), 1); assert.equal(exitCodeForStatus('BLOCKED'), 1); assert.equal(exitCodeForStatus('NOT_YET_PROVEN'), 1);
+  assert.equal(overallStatus([{ id: 'x', status: 'UNKNOWN', detail: '' }]), 'UNKNOWN');
+  assert.equal(overallStatus([{ id: 'x', status: 'NOT_APPLICABLE', detail: '' }]), 'NOT_APPLICABLE');
+  assert.equal(exitCodeForStatus('PASS'), 0); assert.equal(exitCodeForStatus('FAIL'), 1); assert.equal(exitCodeForStatus('UNKNOWN'), 1); assert.equal(exitCodeForStatus('NOT_APPLICABLE'), 1);
 });
 
 test('invalid evidence URI fails through EvidenceStorage semantics', async () => {
@@ -86,7 +86,7 @@ test('EvidenceStorage production path verifies canonical content, hash mismatch,
     assert.equal((await verifyEvidence('http://ipfs.test', undefined, uri, hashText(canonical))).status, 'PASS');
     assert.equal((await verifyEvidence('http://ipfs.test', undefined, uri, '0x' + '11'.repeat(32))).status, 'FAIL');
   } finally { globalThis.fetch = (async () => new Response('offline', { status: 503 })) as typeof fetch; }
-  try { assert.equal((await verifyEvidence('http://ipfs.test', undefined, uri, hashText(canonical))).status, 'BLOCKED'); } finally { globalThis.fetch = oldFetch; }
+  try { assert.equal((await verifyEvidence('http://ipfs.test', undefined, uri, hashText(canonical))).status, 'UNKNOWN'); } finally { globalThis.fetch = oldFetch; }
 });
 
 test('receipt proof rejects a wrong registry emitter and evidenceURIHash mismatch', async () => {
@@ -95,7 +95,7 @@ test('receipt proof rejects a wrong registry emitter and evidenceURIHash mismatc
   const row = { id: '0x' + '11'.repeat(32), providerKey: '0x' + '22'.repeat(32), endpoint: { id: '0x' + '33'.repeat(32) }, payer: '0x' + '44'.repeat(20), specHash: '0x' + '55'.repeat(32), paymentHash: '0x' + '66'.repeat(32), requestHash: '0x' + '77'.repeat(32), responseHash: '0x' + '88'.repeat(32), evidenceHash: '0x' + '99'.repeat(32), evidenceURIHash: '0x' + 'aa'.repeat(32), evidenceURI: uri, blockNumber: '10', transactionHash: '0x' + 'aa'.repeat(32) };
   globalThis.fetch = (async () => new Response(JSON.stringify({ data: { receipts: [row] } }), { status: 200 })) as typeof fetch;
   const client = { getLogs: async () => [{ address: '0x' + 'cc'.repeat(20), args: {} as any }], getTransactionReceipt: async () => ({ status: 'reverted' }) };
-  try { const checks = await verifyReceiptProof('https://graph.test', client as any, '0x' + 'bb'.repeat(20), 'PASS'); assert.equal(checks.find(c => c.id === 'receipt.arc_graph_match')?.status, 'FAIL'); } finally { globalThis.fetch = oldFetch; }
+  try { const checks = await verifyReceiptProof('https://graph.test', client as any, '0x' + 'bb'.repeat(20)); assert.equal(checks.find(c => c.id === 'receipt.arc_graph_match')?.status, 'FAIL'); } finally { globalThis.fetch = oldFetch; }
 });
 
 test('contract bytecode, evaluator target, and USDC decimal checks use production functions', async () => {
@@ -133,6 +133,6 @@ test('verifyArcChain exercises chain, unavailable, and stale RPC paths', async (
     rpc('0x1', '0x' + Math.floor(Date.now() / 1000).toString(16));
     assert.equal((await verifyArcChain('http://rpc.test'))[0].status, 'FAIL');
     rpc('', '', true);
-    assert.equal((await verifyArcChain('http://rpc.test'))[0].status, 'BLOCKED');
+    assert.equal((await verifyArcChain('http://rpc.test'))[0].status, 'UNKNOWN');
   } finally { globalThis.fetch = oldFetch; }
 });
