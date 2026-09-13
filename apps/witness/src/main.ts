@@ -14,6 +14,18 @@ const graph=new GraphClient(cfg.GRAPH_URL,cfg.GRAPH_DEPLOYMENT_ID);
 const storage=evidenceStorageFromEnvironment(cfg);if(!storage)throw new Error('IPFS_STORAGE_CONFIGURATION_REQUIRED');
 const witness=new Witness(db,cfg.ARC_RPC_URL,cfg.CIRCLE_AGENT_ADDRESS as Address,cfg.EVIDENCE_REGISTRY_ADDRESS as Address,cfg.XYX_EVALUATOR_ADDRESS as Address,cfg.WITNESS_PRIVATE_KEY as Hex,cfg.RELAYER_PRIVATE_KEY as Hex,cfg.EVALUATOR_PRIVATE_KEY as Hex,storage,graph,cfg.MAX_GRAPH_LAG_BLOCKS,cfg.ERC8183_ADDRESS as Address,cfg.MAX_JOB_USDC,cfg.EVIDENCE_START_BLOCK);
 const app=Fastify({bodyLimit:32768,logger:{redact:['req.headers.authorization','req.body','res.body']}});
+const HEALTH_TIMEOUT_MS=5000;
+async function boundedHealthCheck(check:()=>Promise<unknown>,timeoutMs=HEALTH_TIMEOUT_MS) {
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  try {
+    await new Promise<void>((resolve,reject)=>{
+      timer=setTimeout(()=>reject(new Error('HEALTH_CHECK_TIMEOUT')),timeoutMs);
+      Promise.resolve().then(check).then(()=>resolve(),reject);
+    });
+  } finally {
+    if(timer)clearTimeout(timer);
+  }
+}
 app.addHook('onRequest',async(req,reply)=>{
   const actual=Buffer.from(req.headers.authorization??''),expected=Buffer.from(`Bearer ${cfg.INTERNAL_SERVICE_TOKEN}`);
   if(actual.length!==expected.length||!timingSafeEqual(actual,expected))return reply.code(401).send({error:'UNAUTHORIZED'});
@@ -33,7 +45,7 @@ app.get('/healthz',async(_,reply)=>{
     if(await witness.client.readContract({address:cfg.XYX_EVALUATOR_ADDRESS as Address,abi:evaluatorAbi,functionName:'paused'}))throw new Error('EVALUATOR_PAUSED');
     const target=await witness.client.readContract({address:cfg.XYX_EVALUATOR_ADDRESS as Address,abi:evaluatorAbi,functionName:'agenticCommerce'});
     if(target.toLowerCase()!==cfg.ERC8183_ADDRESS.toLowerCase())throw new Error('ERC8183_CONFIGURATION_MISMATCH');
-  }}).map(async([name,check])=>{try{await check();checks[name]=true;}catch{checks[name]=false;}}));
+  }}).map(async([name,check])=>{try{await boundedHealthCheck(check);checks[name]=true;}catch{checks[name]=false;}}));
   const ready=Object.values(checks).every(Boolean);
   const circleExecutionConfigured=Boolean(process.env.CIRCLE_API_KEY&&process.env.CIRCLE_ENTITY_SECRET);
   return reply.code(ready?200:503).send({ready,checks,circleExecutionConfigured});

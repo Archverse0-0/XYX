@@ -1,9 +1,10 @@
-import { decodeEventLog, type Abi, type Address, type Hex } from 'viem';
+import { decodeEventLog, erc20Abi, type Abi, type Address, type Hex } from 'viem';
 import { z } from 'zod';
 import { CircleAdapter } from '../circle-adapter/src/index.js';
 import { arcClient, ARC_USDC } from '../shared/src/chain.js';
 import { atomicAmount, address, hex32, hashJSON } from '../shared/src/index.js';
 import { assertJobExpiry, evaluateDeliverable, jobIdSchema } from '../shared/src/jobs.js';
+import type { OperationProgressReporter } from '../shared/src/job-operations.js';
 import artifact from './AgenticCommerce.abi.json' with { type: 'json' };
 
 // ─── Contract ABI and chain types ────────────────────────────────────────────
@@ -80,28 +81,62 @@ export class ProtectedJobService {
     return job;
   }
 
+  // Every machine-wallet write is checked against the live Arc target and
+  // simulated with the configured Circle buyer immediately before broadcast.
+  // Circle remains the only signer for buyer operations; this service never
+  // accepts an arbitrary injected/operator wallet.
+  private async preflight(target: Address) {
+    if (await this.client.getChainId() !== 5_042_002) throw new Error('WRONG_CHAIN');
+    const code = await this.client.getCode({ address: target });
+    if (!code || code === '0x') throw new Error('TARGET_CODE_MISSING');
+    return this.buyer.wallet as Address;
+  }
+
+  private async simulate(target: Address, abi: Abi, functionName: string, args: readonly unknown[]) {
+    const account = await this.preflight(target);
+    await this.client.simulateContract({
+      address: target,
+      abi,
+      functionName,
+      args,
+      account,
+    } as never);
+  }
+
   // ─── Transaction result helper ─────────────────────────────────────────
   // Wait for receipt and verify success. Returns the tx hash on success.
-  private async tx(result: unknown, label: string): Promise<Hex> {
+  private async tx(result: unknown, label: string, target: Address): Promise<Hex> {
     const parsed = txSchema.parse(result);
     if (!parsed.txHash) throw new Error(`${label.toUpperCase()}_TX_UNKNOWN`);
     const receipt = await this.client.waitForTransactionReceipt({ hash: parsed.txHash as Hex, timeout: 60_000 });
     if (receipt.status !== 'success') throw new Error(`${label.toUpperCase()}_FAILED`);
+    if (receipt.from.toLowerCase() !== this.buyer.wallet.toLowerCase()) throw new Error(`${label.toUpperCase()}_SENDER_MISMATCH`);
+    if (!receipt.to || receipt.to.toLowerCase() !== target.toLowerCase()) throw new Error(`${label.toUpperCase()}_TARGET_MISMATCH`);
     return parsed.txHash as Hex;
   }
 
   // ─── Buyer-side operations ────────────────────────────────────────────
 
-  async create(providerAddress: string, evaluator: string, expiresAt: number, description: string, key: string) {
+  async create(providerAddress: string, evaluator: string, expiresAt: number, description: string, key: string, reportProgress?: OperationProgressReporter) {
     address.parse(providerAddress);
     address.parse(evaluator);
     assertJobExpiry(expiresAt);
     if (providerAddress.toLowerCase() !== this.provider.toLowerCase()) throw new Error('PROVIDER_WALLET_MISMATCH');
     if (!description || description.length > 4096) throw new Error('INVALID_DESCRIPTION');
 
+    await this.simulate(this.contract, commerceAbi, 'createJob', [
+      providerAddress,
+      evaluator,
+      BigInt(expiresAt),
+      description,
+      '0x0000000000000000000000000000000000000000',
+    ]);
+
     const tx = await this.tx(
-      await this.buyer.execute('createJob(address,address,uint256,string,address)', [providerAddress, evaluator, String(expiresAt), description, '0x0000000000000000000000000000000000000000'], this.contract, key),
-      'create_job'
+      await this.buyer.execute('createJob(address,address,uint256,string,address)', [providerAddress, evaluator, String(expiresAt), description, '0x0000000000000000000000000000000000000000'], this.contract, key,
+        update => reportProgress?.({ externalOperationId: update.externalOperationId, txHash: update.txHash })),
+      'create_job',
+      this.contract,
     );
     const receipt = await this.client.getTransactionReceipt({ hash: tx });
     const event = jobEvent(receipt.logs, this.contract, 'JobCreated');
@@ -109,27 +144,66 @@ export class ProtectedJobService {
       String(event.client).toLowerCase() !== this.buyer.wallet.toLowerCase() ||
       String(event.provider).toLowerCase() !== providerAddress.toLowerCase() ||
       String(event.evaluator).toLowerCase() !== evaluator.toLowerCase() ||
-      event.expiredAt !== BigInt(expiresAt)
+      event.expiredAt !== BigInt(expiresAt) ||
+      String(event.hook).toLowerCase() !== '0x0000000000000000000000000000000000000000'
     ) {
       throw new Error('JOB_EVENT_UNVERIFIED');
     }
-    return { jobId: String(event.jobId), txHash: tx };
+    const jobId = String(event.jobId);
+    const created = await this.read(jobId);
+    if (
+      created.id !== BigInt(jobId) ||
+      created.client.toLowerCase() !== this.buyer.wallet.toLowerCase() ||
+      created.provider.toLowerCase() !== providerAddress.toLowerCase() ||
+      created.evaluator.toLowerCase() !== evaluator.toLowerCase() ||
+      created.description !== description ||
+      created.budget !== 0n ||
+      created.expiredAt !== BigInt(expiresAt) ||
+      created.status !== JobStatus.OPEN ||
+      created.hook.toLowerCase() !== '0x0000000000000000000000000000000000000000'
+    ) throw new Error('JOB_CREATE_POST_STATE_MISMATCH');
+    return { jobId, txHash: tx };
   }
 
   async approve(amount: string, key: string) {
     const value = atomicAmount(amount, 6);
     if (value <= 0n) throw new Error('INVALID_APPROVE_AMOUNT');
+    const account = await this.preflight(ARC_USDC);
+    const balance = await this.client.readContract({ address: ARC_USDC, abi: erc20Abi, functionName: 'balanceOf', args: [account] });
+    if (balance < value) throw new Error('INSUFFICIENT_BALANCE');
+    await this.client.simulateContract({
+      address: ARC_USDC,
+      abi: erc20Abi,
+      functionName: 'approve',
+      args: [this.contract, value],
+      account,
+    });
     return this.tx(
       await this.buyer.execute('approve(address,uint256)', [this.contract, value.toString()], ARC_USDC, key),
-      'approve'
+      'approve',
+      ARC_USDC,
     );
   }
 
   async fund(jobId: string, key: string) {
     jobIdSchema.parse(jobId);
+    const job = await this.read(jobId);
+    if (job.status !== JobStatus.OPEN) throw new Error('JOB_NOT_OPEN');
+    if (job.budget <= 0n) throw new Error('JOB_BUDGET_REQUIRED');
+    const account = await this.preflight(this.contract);
+    const allowance = await this.client.readContract({ address: ARC_USDC, abi: erc20Abi, functionName: 'allowance', args: [account, this.contract] });
+    if (allowance < job.budget) throw new Error('INSUFFICIENT_ALLOWANCE');
+    await this.client.simulateContract({
+      address: this.contract,
+      abi: commerceAbi,
+      functionName: 'fund',
+      args: [BigInt(jobId), '0x'],
+      account,
+    } as never);
     return this.tx(
       await this.buyer.execute('fund(uint256,bytes)', [jobId, '0x'], this.contract, key),
-      'fund'
+      'fund',
+      this.contract,
     );
   }
 
@@ -137,9 +211,18 @@ export class ProtectedJobService {
     jobIdSchema.parse(jobId);
     const eligibility = await this.isRefundEligible(jobId);
     if (!eligibility.eligible) throw new Error(eligibility.reason);
+    const account = await this.preflight(this.contract);
+    await this.client.simulateContract({
+      address: this.contract,
+      abi: commerceAbi,
+      functionName: 'claimRefund',
+      args: [BigInt(jobId)],
+      account,
+    } as never);
     return this.tx(
       await this.buyer.execute('claimRefund(uint256)', [jobId], this.contract, key),
-      'claimRefund'
+      'claimRefund',
+      this.contract,
     );
   }
 
@@ -157,6 +240,7 @@ export class ProtectedJobService {
     const receipt = await this.client.waitForTransactionReceipt({ hash: submissionTxHash, timeout: 60_000 });
     if (receipt.status !== 'success') throw new Error('SUBMISSION_TX_FAILED');
     if (receipt.from.toLowerCase() !== this.provider.toLowerCase()) throw new Error('SUBMISSION_PROVIDER_MISMATCH');
+    if (!receipt.to || receipt.to.toLowerCase() !== this.contract.toLowerCase()) throw new Error('SUBMISSION_TARGET_MISMATCH');
 
     // Decode the exactly-one JobSubmitted event
     const event = jobEvent(receipt.logs, this.contract, 'JobSubmitted');

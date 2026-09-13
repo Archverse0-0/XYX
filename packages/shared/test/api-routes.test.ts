@@ -31,6 +31,12 @@ test('PROTECTED_JOB_NOT_CONFIGURED maps to 503', () => {
   assert.deepEqual(apiError(new Error('PROTECTED_JOB_NOT_CONFIGURED')), { status: 503, error: 'PROTECTED_JOB_NOT_CONFIGURED' });
 });
 
+test('feature configuration errors are explicit and unavailable', () => {
+  for (const code of ['OPEN_PURCHASE_NOT_CONFIGURED','WITNESS_NOT_CONFIGURED','INTERNAL_SERVICE_AUTH_NOT_CONFIGURED','IPFS_STORAGE_CONFIGURATION_REQUIRED','EVIDENCE_REGISTRY_NOT_CONFIGURED']) {
+    assert.deepEqual(apiError(new Error(code)), { status: 503, error: code });
+  }
+});
+
 test('INVALID_EXPIRY maps to 400', () => {
   assert.deepEqual(apiError(new Error('INVALID_EXPIRY')), { status: 400, error: 'INVALID_EXPIRY' });
 });

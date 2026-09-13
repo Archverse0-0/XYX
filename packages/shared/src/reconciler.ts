@@ -3,7 +3,7 @@ import { decodeEventLog, type Address, type Hex } from 'viem';
 import { arcClient } from './chain.js';
 import { atomicAmount, hashJSON, hex32 } from './index.js';
 import { commerceAbi, chainJobSchema, jobEvent } from '../../erc8183/service.js';
-import { assertJobBudget, createJobSchema, jobIdSchema } from './jobs.js';
+import { assertJobBudget, canonicalJobSpec, createJobSchema, jobIdSchema } from './jobs.js';
 import type { DB } from './storage.js';
 import { evaluatorAbi } from './abi.js';
 
@@ -15,6 +15,12 @@ export type ReconciliationResult =
   | { status: 'SAFE_TO_RETRY' }
   | { status: 'STILL_AMBIGUOUS' }
   | { status: 'CANONICAL_CONFLICT'; detail: string };
+
+export type ExternalOperationLookup = (externalOperationId: string) => Promise<{
+  id: string;
+  state: string;
+  txHash?: string;
+} | null>;
 
 export type OperationRow = {
   id: string;
@@ -45,6 +51,7 @@ export class ProtectedJobReconciler {
     readonly commerceAddress: Address,
     readonly evaluatorAddress: Address,
     readonly walletAddress: Address,
+    readonly externalOperationLookup?: ExternalOperationLookup,
   ) {
     this.client = arcClient(rpc);
   }
@@ -58,7 +65,7 @@ export class ProtectedJobReconciler {
     }
 
     // Already confirmed — just return cached result
-    if (row.state === 'CONFIRMED') {
+    if (row.state === 'CONFIRMED' && row.operation !== 'create') {
       return { status: 'RECOVERED_CONFIRMED', result: row.result };
     }
 
@@ -81,37 +88,130 @@ export class ProtectedJobReconciler {
     }
   }
 
-  // CREATE recovery:
-  // Canonical: ERC-8183 job state (getJob)
-  // If job exists with matching client/provider/evaluator/expiry → CONFIRMED
-  // If job doesn't exist → STILL_AMBIGUOUS (can't safely retry without knowing if tx was broadcast)
-  // If job exists with different params → CANONICAL_CONFLICT
+  // CREATE recovery is read-only on chain. Never infer retry safety from a
+  // missing receipt, a failed Circle status, or an event-search candidate.
   private async reconcileCreate(row: OperationRow): Promise<ReconciliationResult> {
     const spec = createJobSchema.parse(jsonValue(row.canonical_snapshot));
-    if (!spec) return { status: 'STILL_AMBIGUOUS' };
+    if (hashJSON(spec) !== row.request_hash) return { status: 'CANONICAL_CONFLICT', detail: 'CREATE_SNAPSHOT_MISMATCH' };
+    try {
+      if (await this.client.getChainId() !== 5042002) return { status: 'CANONICAL_CONFLICT', detail: 'CREATE_CHAIN_MISMATCH' };
+    } catch { return { status: 'STILL_AMBIGUOUS' }; }
+    const run = await this.getRun(row.job_run_id);
+    if (!run) return { status: 'STILL_AMBIGUOUS' };
+    if (hashJSON(jsonValue(run.specification)) !== row.request_hash ||
+      String(run.client_address).toLowerCase() !== this.walletAddress.toLowerCase() ||
+      String(run.provider_address).toLowerCase() !== spec.provider.toLowerCase() ||
+      String(run.evaluator_address).toLowerCase() !== this.evaluatorAddress.toLowerCase() ||
+      String(run.commerce_address).toLowerCase() !== this.commerceAddress.toLowerCase()) {
+      return { status: 'CANONICAL_CONFLICT', detail: 'CREATE_RUN_CONTEXT_MISMATCH' };
+    }
+    const expectedDescription = `${spec.description} | XYX specification: ${hashJSON(canonicalJobSpec(spec))}`;
+    type Proof = { jobId: string; txHash: string | null; state: string };
 
-    // If we have a tx hash, try to find the JobCreated event
-    if (row.tx_hash) {
+    const inspectJob = async (jobId: string): Promise<{ proof: Proof } | { conflict: string } | null> => {
       try {
-        const receipt = await this.client.getTransactionReceipt({ hash: row.tx_hash as Hex });
-        if (receipt.status === 'success') {
-          const event = jobEvent(receipt.logs, this.commerceAddress, 'JobCreated');
-          if (
-            String(event.client).toLowerCase() === this.walletAddress.toLowerCase() &&
-            String(event.provider).toLowerCase() === spec.provider.toLowerCase() &&
-            String(event.evaluator).toLowerCase() === this.evaluatorAddress.toLowerCase()
-          ) {
-            const result = { jobId: String(event.jobId), txHash: row.tx_hash };
-            await this.markConfirmed(row.id, result);
-            return { status: 'RECOVERED_CONFIRMED', result };
-          }
+        const job = chainJobSchema.parse(await this.client.readContract({
+          address: this.commerceAddress,
+          abi: commerceAbi,
+          functionName: 'getJob',
+          args: [BigInt(jobIdSchema.parse(jobId))],
+        }));
+        if (
+          job.id !== BigInt(jobId) ||
+          job.client.toLowerCase() !== this.walletAddress.toLowerCase() ||
+          job.provider.toLowerCase() !== spec.provider.toLowerCase() ||
+          job.evaluator.toLowerCase() !== this.evaluatorAddress.toLowerCase() ||
+          job.expiredAt !== BigInt(spec.expiresAt) ||
+          job.description !== expectedDescription ||
+          job.hook !== '0x0000000000000000000000000000000000000000'
+        ) return { conflict: 'CREATE_JOB_CONTEXT_MISMATCH' };
+        return { proof: { jobId, txHash: null, state: ['OPEN', 'FUNDED', 'SUBMITTED', 'COMPLETED', 'REJECTED', 'REFUNDED'][job.status] } };
+      } catch {
+        return null;
+      }
+    };
+
+    const confirm = async (proof: Proof): Promise<ReconciliationResult> => {
+      if (run.job_id && String(run.job_id) !== proof.jobId) return { status: 'CANONICAL_CONFLICT', detail: 'CREATE_JOB_ID_MISMATCH' };
+      const result = { jobId: proof.jobId, txHash: proof.txHash };
+      // Both local records advance in one SQL statement. Preserve later run
+      // states and never overwrite another job/transaction association.
+      const saved = await this.db.query(`WITH recovered_run AS (
+        UPDATE protected_job_runs SET job_id=$3,
+          state=CASE WHEN state='PREPARING' THEN $6 ELSE state END,
+          tx_hash=COALESCE(tx_hash,$4)
+        WHERE id=$5 AND (job_id IS NULL OR job_id=$3)
+          AND EXISTS (SELECT 1 FROM job_operations op WHERE op.id=$1 AND op.job_run_id=$5
+            AND (op.tx_hash IS NULL OR $4 IS NULL OR lower(op.tx_hash)=lower($4)))
+          AND NOT EXISTS (SELECT 1 FROM protected_job_runs other WHERE other.job_id=$3 AND other.id<>$5)
+        RETURNING id
+      ) UPDATE job_operations SET state = 'CONFIRMED', result = $2,
+          tx_hash=COALESCE(tx_hash,$4), confirmed_at=now(), updated_at=now()
+        WHERE id=$1 AND job_run_id IN (SELECT id FROM recovered_run)
+          AND (tx_hash IS NULL OR $4 IS NULL OR lower(tx_hash)=lower($4))`,
+      [row.id, JSON.stringify(result), proof.jobId, proof.txHash, row.job_run_id, proof.state]);
+      if (saved.rowCount !== 1) throw new Error('CREATE_RECONCILIATION_PERSISTENCE_FAILED');
+      return { status: 'RECOVERED_CONFIRMED', result };
+    };
+
+    const inspectTransaction = async (txHash: string): Promise<ReconciliationResult | null> => {
+      if (!/^0x[0-9a-fA-F]{64}$/.test(txHash)) return { status: 'STILL_AMBIGUOUS' };
+      try {
+        const receipt = await this.client.getTransactionReceipt({ hash: txHash as Hex });
+        if (receipt.transactionHash.toLowerCase() !== txHash.toLowerCase() ||
+          receipt.from.toLowerCase() !== this.walletAddress.toLowerCase() ||
+          receipt.to?.toLowerCase() !== this.commerceAddress.toLowerCase()) {
+          return { status: 'CANONICAL_CONFLICT', detail: 'CREATE_TRANSACTION_MISMATCH' };
         }
-      } catch { /* tx may not exist yet */ }
+        if (receipt.status !== 'success') return { status: 'STILL_AMBIGUOUS' };
+        const event = jobEvent(receipt.logs, this.commerceAddress, 'JobCreated');
+        if (
+          String(event.client).toLowerCase() !== this.walletAddress.toLowerCase() ||
+          String(event.provider).toLowerCase() !== spec.provider.toLowerCase() ||
+          String(event.evaluator).toLowerCase() !== this.evaluatorAddress.toLowerCase() ||
+          event.expiredAt !== BigInt(spec.expiresAt) ||
+          String(event.hook).toLowerCase() !== '0x0000000000000000000000000000000000000000'
+        ) return { status: 'CANONICAL_CONFLICT', detail: 'CREATE_EVENT_MISMATCH' };
+        const checked = await inspectJob(String(event.jobId));
+        if (!checked) return { status: 'STILL_AMBIGUOUS' };
+        if ('conflict' in checked) return { status: 'CANONICAL_CONFLICT', detail: checked.conflict };
+        return confirm({ ...checked.proof, txHash });
+      } catch (error) {
+        if (error instanceof Error && error.message === 'JOB_EVENT_UNVERIFIED') {
+          return { status: 'CANONICAL_CONFLICT', detail: 'CREATE_EVENT_UNVERIFIED' };
+        }
+        return null;
+      }
+    };
+
+    // 1. A persisted Arc tx hash is the strongest local identifier.
+    if (row.tx_hash) {
+      const result = await inspectTransaction(String(row.tx_hash));
+      return result ?? { status: 'STILL_AMBIGUOUS' };
     }
 
-    // Try to read job state if we have a jobId from a previous partial save
-    // But without a jobId, we can't read the job state
-    // This is the fundamental ambiguity: we may have broadcast but not persisted the tx hash or job ID
+    // 2. Recover the Arc tx hash from Circle's durable operation id.
+    if (row.external_operation_id && this.externalOperationLookup) {
+      try {
+        const external = await this.externalOperationLookup(row.external_operation_id);
+        if (external && external.id !== row.external_operation_id) return { status: 'CANONICAL_CONFLICT', detail: 'CIRCLE_OPERATION_ID_MISMATCH' };
+        if (external?.txHash) {
+          const result = await inspectTransaction(external.txHash);
+          if (result) return result;
+        }
+      } catch { /* Circle read failure leaves the operation ambiguous. */ }
+      return { status: 'STILL_AMBIGUOUS' };
+    }
+
+    // 3. A partial DB save may contain a job id but no transaction hash.
+    if (run?.job_id) {
+      const checked = await inspectJob(String(run.job_id));
+      if (checked && 'conflict' in checked) return { status: 'CANONICAL_CONFLICT', detail: checked.conflict };
+      if (checked && 'proof' in checked) return confirm({ ...checked.proof, txHash: row.tx_hash ?? null });
+    }
+
+    // Historical event investigation is an operator read-only procedure.
+    // Similar jobs (even a single search hit) do not establish causal identity.
     return { status: 'STILL_AMBIGUOUS' };
   }
 

@@ -203,7 +203,7 @@ export class Witness {
       const evaluated=evaluateDeliverable(input.evaluation,deliverable);
       const metaBlock=Number(await this.client.getBlockNumber());
       const meta=await this.client.getBlock({blockNumber:BigInt(metaBlock)});
-      const bundle={version:'xyx-job-evidence-v1',jobId,commerce:this.commerce,submissionTxHash:row.submission_tx_hash,
+      const bundle={version:'xyx-job-evidence-v1',mode:'protected-job',jobId,commerce:this.commerce,submissionTxHash:row.submission_tx_hash,
         specification:{hash:canonicalSpecHash,input:row.specification,description:state.description},
         participants:{client:state.client,provider:state.provider,evaluator:state.evaluator},
         chainState:{chainId:5042002,blockNumber:metaBlock,blockHash:meta.hash,jobStatus:state.status,jobBudget:state.budget.toString()},
@@ -224,6 +224,9 @@ export class Witness {
         const signature=await this.evaluatorSigner.signTypedData({domain:verdictDomain(this.evaluator),types:verdictTypes,primaryType:'JobVerdict',message:verdict});
         const recovered=await recoverTypedDataAddress({domain:verdictDomain(this.evaluator),types:verdictTypes,primaryType:'JobVerdict',message:verdict,signature});
         if(recovered.toLowerCase()!==this.evaluatorSigner.address.toLowerCase())throw new Error('VERDICT_SIGNER_MISMATCH');
+        const attestorRole=await this.client.readContract({address:this.evaluator as Address,abi:evaluatorAbi,functionName:'ATTESTOR_ROLE'});
+        const hasAttestorRole=await this.client.readContract({address:this.evaluator as Address,abi:evaluatorAbi,functionName:'hasRole',args:[attestorRole,this.evaluatorSigner.address]});
+        if(!hasAttestorRole)throw new Error('VERDICT_SIGNER_NOT_ATTESTOR');
         if(now>=verdict.expiresAt)throw new Error('VERDICT_EXPIRED');
         const connection=await this.db.connect();
         try {

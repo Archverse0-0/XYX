@@ -1,7 +1,12 @@
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
+import { setDefaultResultOrder } from 'node:dns';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+// Some local networks advertise an unreachable IPv6 route for the Neon pooler.
+// Keep the workaround process-local: Node still supports IPv6 when no IPv4
+// result is available, but PostgreSQL connections prefer the working route.
+setDefaultResultOrder('ipv4first');
 export const poolFor=(url:string)=>new pg.Pool({connectionString:url,max:10,connectionTimeoutMillis:5000,statement_timeout:15000});
 export interface DB {
   query: (sql: string, ...args: unknown[]) => Promise<{ rowCount: number; rows: Record<string, unknown>[] }>;

@@ -14,29 +14,65 @@ function validateStorage(value:z.infer<typeof storageConfig>,ctx:z.RefinementCtx
     if(!value.IPFS_GATEWAY_URL)ctx.addIssue({code:'custom',path:['IPFS_GATEWAY_URL'],message:'required for Pinata storage'});
   }
 }
-const baseConfig=z.object({
+const coreConfig=z.object({
   DATABASE_URL:z.string().min(1),ARC_RPC_URL:z.string().url(),CIRCLE_AGENT_ADDRESS:deployedAddress,
   GRAPH_URL:z.string().url(),GRAPH_DEPLOYMENT_ID:z.string().min(1),MAX_GRAPH_LAG_BLOCKS:z.coerce.number().int().nonnegative().default(50),
-  EVIDENCE_REGISTRY_ADDRESS:deployedAddress,XYX_EVALUATOR_ADDRESS:deployedAddress,
-  INTERNAL_SERVICE_TOKEN:z.string().min(32),
+  XYX_EVALUATOR_ADDRESS:deployedAddress,
   ERC8183_ADDRESS:deployedAddress.default(commerceDeployment.address),
   MAX_JOB_USDC:usdcAmount.default('5'),
 }).merge(storageConfig);
 // Circle credentials authorize machine-wallet execution only. Evidence signing,
 // evidence storage, and evaluator verdict preparation must not possess them.
 const circleExecutionConfig=z.object({CIRCLE_API_KEY:z.string().min(1),CIRCLE_ENTITY_SECRET:z.string().min(1)});
+const witnessSharedConfig=z.object({EVIDENCE_REGISTRY_ADDRESS:deployedAddress,INTERNAL_SERVICE_TOKEN:z.string().min(32)});
+const privyConfig=z.object({PRIVY_APP_ID:z.string().min(1),PRIVY_VERIFICATION_KEY:z.string().min(1),OPERATOR_PRIVY_DID:z.string().startsWith('did:privy:')});
+
+// The common/witness schema remains strict because the Witness process owns
+// ReceiptAttestation/evaluator signing and its storage configuration.
+const baseConfig=coreConfig.merge(witnessSharedConfig);
 export const commonConfig=baseConfig.merge(circleExecutionConfig);
-export const apiConfig=commonConfig.extend({
-  PRIVY_APP_ID:z.string().min(1),PRIVY_VERIFICATION_KEY:z.string().min(1),OPERATOR_PRIVY_DID:z.string().startsWith('did:privy:'),
-  WITNESS_URL:z.string().url(),LLM_COMPLETIONS_URL:z.string().url(),LLM_MODEL:z.string().min(1),LLM_API_KEY:z.string().min(1),
+
+// API startup only needs the durable/core capabilities and authentication. The
+// feature fields below are optional here and are validated by capability guards
+// at the first route that actually invokes each feature.
+export const apiConfig=coreConfig.merge(circleExecutionConfig).merge(privyConfig).extend({
+  EVIDENCE_REGISTRY_ADDRESS:deployedAddress.optional(),
+  INTERNAL_SERVICE_TOKEN:z.string().min(32).optional(),
+  WITNESS_URL:z.string().url().optional(),
+  LLM_COMPLETIONS_URL:z.string().url().optional(),LLM_MODEL:z.string().min(1).optional(),LLM_API_KEY:z.string().min(1).optional(),
   API_PORT:z.coerce.number().int().default(3001),
   PROTECTED_JOB_PROVIDER_ADDRESS:address.optional(),
-}).superRefine(validateStorage);
+});
 export const witnessConfig=baseConfig.extend({
   WITNESS_PRIVATE_KEY:z.string().regex(/^0x[0-9a-fA-F]{64}$/),RELAYER_PRIVATE_KEY:z.string().regex(/^0x[0-9a-fA-F]{64}$/),
   EVALUATOR_PRIVATE_KEY:z.string().regex(/^0x[0-9a-fA-F]{64}$/),WITNESS_PORT:z.coerce.number().int().default(3002),
   EVIDENCE_START_BLOCK:z.coerce.number().int().nonnegative().default(0),
 }).superRefine(validateStorage);
+
+const witnessRuntimeConfig=z.object({WITNESS_URL:z.string().url(),INTERNAL_SERVICE_TOKEN:z.string().min(32)});
+const openPurchaseRuntimeConfig=witnessRuntimeConfig.extend({
+  EVIDENCE_REGISTRY_ADDRESS:deployedAddress,
+  LLM_COMPLETIONS_URL:z.string().url(),LLM_MODEL:z.string().min(1),LLM_API_KEY:z.string().min(1),
+});
+export type ApiConfig=z.output<typeof apiConfig>;
+export type WitnessRuntimeConfig=z.output<typeof witnessRuntimeConfig>;
+export type OpenPurchaseRuntimeConfig=z.output<typeof openPurchaseRuntimeConfig>;
+
+export function requireWitnessRuntimeConfig(cfg:ApiConfig):WitnessRuntimeConfig {
+  if(!cfg.WITNESS_URL)throw new Error('WITNESS_NOT_CONFIGURED');
+  if(!cfg.INTERNAL_SERVICE_TOKEN)throw new Error('INTERNAL_SERVICE_AUTH_NOT_CONFIGURED');
+  const parsed=witnessRuntimeConfig.safeParse(cfg);
+  if(!parsed.success)throw new Error('WITNESS_NOT_CONFIGURED');
+  return parsed.data;
+}
+
+export function requireOpenPurchaseRuntimeConfig(cfg:ApiConfig):OpenPurchaseRuntimeConfig {
+  if(!cfg.EVIDENCE_REGISTRY_ADDRESS)throw new Error('EVIDENCE_REGISTRY_NOT_CONFIGURED');
+  const parsed=openPurchaseRuntimeConfig.safeParse(cfg);
+  if(!parsed.success)throw new Error('OPEN_PURCHASE_NOT_CONFIGURED');
+  return parsed.data;
+}
+
 export function loadConfig<T extends z.ZodTypeAny>(schema:T,env:Record<string,string|undefined>=process.env):z.output<T> {
   if(schema===(apiConfig as unknown)&&['WITNESS_PRIVATE_KEY','RELAYER_PRIVATE_KEY','EVALUATOR_PRIVATE_KEY'].some(name=>!!env[name]))
     throw new Error('API_SIGNING_SECRETS_FORBIDDEN');

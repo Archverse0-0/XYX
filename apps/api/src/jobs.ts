@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { Address, Hex } from 'viem';
 import type { apiConfig } from '../../../packages/shared/src/config.js';
+import { requireWitnessRuntimeConfig } from '../../../packages/shared/src/config.js';
 import type { DB } from '../../../packages/shared/src/storage.js';
 import type { GraphClient } from '../../../packages/shared/src/graph.js';
 import { atomicAmount, canonicalJSON, defaultPreference, hashJSON, hex32, serviceIdentity } from '../../../packages/shared/src/index.js';
@@ -14,6 +15,7 @@ import { JobStatus, ProtectedJobService, jobEvent } from '../../../packages/erc8
 import { ERC8004Client } from '../../../packages/erc8004/client.js';
 import { SelectionEngine } from '../../../packages/erc8004/src/selection-engine.js';
 import { canonicalSelectionHash, selectionResultSchema, taskCategorySchema } from '../../../packages/shared/src/selection.js';
+import { registerCreateReconciliation } from './create-reconciliation.js';
 
 interface ProtectedJobRunRow {
   id: string;
@@ -29,7 +31,10 @@ interface ProtectedJobRunRow {
   evaluator_address: string;
 }
 
-const createdResultSchema = z.object({ jobId: jobIdSchema, txHash: hex32 }).strict();
+// A chain-verified job id can be recovered from a partial DB save even when
+// Circle never exposed the transaction hash to this process.  Keep the hash
+// nullable rather than fabricating one; normal creates still always return it.
+const createdResultSchema = z.object({ jobId: jobIdSchema, txHash: hex32.nullable() }).strict();
 const createRequestSchema = createJobSchema.extend({ selectionId: hex32 }).strict();
 const parseSpecification = (value: unknown) => createJobSchema.parse(typeof value === 'string' ? JSON.parse(value) : value);
 function operationTxHash(value: unknown): string {
@@ -38,14 +43,28 @@ function operationTxHash(value: unknown): string {
 }
 type Config = z.output<typeof apiConfig>;
 
+export function requireEvidenceStorage(cfg:Pick<Config,'IPFS_PROVIDER'|'IPFS_API_URL'|'IPFS_AUTHORIZATION'|'IPFS_GATEWAY_URL'|'PINATA_JWT'>) {
+  const storage=evidenceStorageFromEnvironment(cfg);
+  if(!storage)throw new Error('IPFS_STORAGE_CONFIGURATION_REQUIRED');
+  return storage;
+}
+
 export function registerJobs(app: FastifyInstance, db: DB, graph: GraphClient, cfg: Config, owner: (req: FastifyRequest) => string) {
   const service = cfg.PROTECTED_JOB_PROVIDER_ADDRESS
     ? new ProtectedJobService(cfg.ARC_RPC_URL, cfg.ERC8183_ADDRESS as Address, new CircleAdapter(cfg.CIRCLE_AGENT_ADDRESS), cfg.PROTECTED_JOB_PROVIDER_ADDRESS as Address)
     : null;
-  const storage = evidenceStorageFromEnvironment(cfg);
-  if (!storage) throw new Error('IPFS_STORAGE_CONFIGURATION_REQUIRED');
+  const storageForEvidence = () => {
+    return requireEvidenceStorage(cfg);
+  };
   const reconciler = service
-    ? new ProtectedJobReconciler(db, cfg.ARC_RPC_URL, cfg.ERC8183_ADDRESS as Address, cfg.XYX_EVALUATOR_ADDRESS as Address, cfg.CIRCLE_AGENT_ADDRESS as Address)
+    ? new ProtectedJobReconciler(
+      db,
+      cfg.ARC_RPC_URL,
+      cfg.ERC8183_ADDRESS as Address,
+      cfg.XYX_EVALUATOR_ADDRESS as Address,
+      cfg.CIRCLE_AGENT_ADDRESS as Address,
+      externalOperationId => service.buyer.getTransactionStatus(externalOperationId),
+    )
     : null;
   const selectionEngine = new SelectionEngine(new ERC8004Client(cfg.ARC_RPC_URL), {
     graphEndpoint:cfg.GRAPH_URL, graphDeploymentId:cfg.GRAPH_DEPLOYMENT_ID, rpc:cfg.ARC_RPC_URL,
@@ -54,6 +73,10 @@ export function registerJobs(app: FastifyInstance, db: DB, graph: GraphClient, c
     if (!service) throw new Error('PROTECTED_JOB_NOT_CONFIGURED');
     return service;
   };
+  registerCreateReconciliation(app, db, owner, () => {
+    configured();
+    return reconciler!;
+  });
   const owned = async (req: FastifyRequest): Promise<ProtectedJobRunRow> => {
     const { jobId } = z.object({ jobId: jobIdSchema }).parse(req.params);
     const { rows } = await db.query('SELECT * FROM protected_job_runs WHERE job_id=$1 AND user_id=$2', [jobId, owner(req)]);
@@ -163,10 +186,10 @@ export function registerJobs(app: FastifyInstance, db: DB, graph: GraphClient, c
     }
 
     const result = await withJobLock(db, row.id, async () => {
-      const created = createdResultSchema.parse(await jobOperation(db, row.id, 'create', input, async opKey => {
+      const created = createdResultSchema.parse(await jobOperation(db, row.id, 'create', input, async (opKey, reportProgress) => {
         assertJobExpiry(input.expiresAt);
         return svc.create(input.provider, cfg.XYX_EVALUATOR_ADDRESS, input.expiresAt,
-          `${input.description} | XYX specification: ${hashJSON(canonicalJobSpec(input))}`, opKey);
+          `${input.description} | XYX specification: ${hashJSON(canonicalJobSpec(input))}`, opKey, reportProgress);
       }, reconciler ?? undefined));
       await db.query("UPDATE protected_job_runs SET job_id=$2,state=CASE WHEN state='PREPARING' THEN 'OPEN' ELSE state END,tx_hash=COALESCE(tx_hash,$3) WHERE id=$1", [row.id, created.jobId, created.txHash]);
       return { runId: row.id, ...created };
@@ -220,6 +243,7 @@ export function registerJobs(app: FastifyInstance, db: DB, graph: GraphClient, c
       if ([JobStatus.COMPLETED, JobStatus.REJECTED, JobStatus.EXPIRED].includes(job.status as 3 | 4 | 5)) throw new Error('JOB_ALREADY_RESOLVED');
       if (job.status !== JobStatus.SUBMITTED) throw new Error('PROVIDER_SUBMISSION_REQUIRED');
       await svc.verifySubmission(row.job_id!, deliverableHash as Hex, input.submissionTxHash as Hex);
+      const storage=storageForEvidence();
       let deliverableUri = input.deliverableUri;
       if (deliverableUri) await storage.readJSON(deliverableUri, deliverableHash);
       else deliverableUri = (await storage.persist(input.deliverable)).evidenceURI;
@@ -237,8 +261,9 @@ export function registerJobs(app: FastifyInstance, db: DB, graph: GraphClient, c
   app.post('/api/v1/jobs/:jobId/evaluate', async (req, reply) => {
     const row = await owned(req);
     z.object({}).strict().parse(req.body ?? {});
-    const response = await fetch(new URL('/internal/resolve-job', cfg.WITNESS_URL), { method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.INTERNAL_SERVICE_TOKEN}` },
+    const witness=requireWitnessRuntimeConfig(cfg);
+    const response = await fetch(new URL('/internal/resolve-job', witness.WITNESS_URL), { method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${witness.INTERNAL_SERVICE_TOKEN}` },
       body: JSON.stringify({ jobId: row.job_id }), signal: AbortSignal.timeout(120_000) });
     if (!response.ok) return reply.code(409).send({ error: 'EVALUATION_REQUIRES_INSPECTION', reconciliationRequired: true });
     return z.object({ jobId: jobIdSchema, decision: z.union([z.literal(1), z.literal(2)]), txHash: hex32 }).parse(await response.json());

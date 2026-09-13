@@ -14,6 +14,12 @@ const exec=promisify(execFile);
 // where the global binary is outside the service user's PATH.
 const cli=process.env.CIRCLE_CLI_PATH??'circle';
 const observer=fileURLToPath(new URL('./observe.mjs',import.meta.url));
+export type CircleExecutionUpdate = {
+  externalOperationId: string;
+  state?: string;
+  txHash?: string;
+};
+export type CircleExecutionReporter = (update: CircleExecutionUpdate) => Promise<void> | void;
 export const discoveryItem=z.object({resource:z.string().url(),metadata:z.object({
   provider:z.object({name:z.string()}),method:z.string(),description:z.string(),
   input:z.record(z.unknown()).optional(),output:z.record(z.unknown()).optional(),
@@ -99,7 +105,23 @@ export class CircleAdapter {
       throw new Error('CIRCLE_DEVELOPER_WALLET_NOT_LIVE');
     return {wallets};
   }
-  async execute(signature:string,parameters:string[],contract:string,idempotencyKey:string=randomUUID()):Promise<{id:string;state?:string;txHash?:string}> {
+  /**
+   * Read the current state of an existing Circle transaction.  This method is
+   * deliberately read-only and is used by reconciliation after a process
+   * loses the response from the polling loop.
+   */
+  async getTransactionStatus(id:string):Promise<{id:string;state:string;txHash?:string}|null> {
+    const client=this.requireDeveloperWallet();
+    const response=await client.getTransaction({id});
+    const transaction=response.data?.transaction;
+    if(!transaction)return null;
+    if(transaction.id!==id || transaction.blockchain!=='ARC-TESTNET' || transaction.sourceAddress?.toLowerCase()!==this.wallet.toLowerCase())
+      throw new Error('CIRCLE_TRANSACTION_CONTEXT_MISMATCH');
+    return z.object({id:z.string().min(1),state:z.string(),txHash:hex32.optional()}).parse({
+      id:transaction.id,state:transaction.state,txHash:transaction.txHash,
+    });
+  }
+  async execute(signature:string,parameters:string[],contract:string,idempotencyKey:string=randomUUID(),report?:CircleExecutionReporter):Promise<{id:string;state?:string;txHash?:string}> {
     z.string().uuid().parse(idempotencyKey);
     if(!/^0x[0-9a-fA-F]{40}$/.test(contract)||!signature||signature.includes(';')||signature.includes(' '))throw new Error('INVALID_CONTRACT_CALL');
     for(const parameter of parameters)if(parameter.length>4096||/[\r\n]/.test(parameter))throw new Error('INVALID_CONTRACT_PARAMETER');
@@ -113,15 +135,25 @@ export class CircleAdapter {
       fee:{type:'level',config:{feeLevel:'MEDIUM'}},
       idempotencyKey,
     });
-    const initial=z.object({id:z.string(),state:z.string()}).parse(created.data);
-    let state=initial.state;
+    const initial=z.object({id:z.string().min(1)}).parse(created.data);
+    // Persist Circle's durable operation identifier before polling.  If the
+    // process dies after this point, reconciliation can query Circle without
+    // ever rebroadcasting the contract call.
+    await report?.({externalOperationId:initial.id});
+    let state=z.object({state:z.string().optional()}).parse(created.data).state;
     let txHash:string|undefined;
+    let reportedTxHash:string|undefined;
     for(let attempt=0;attempt<30;attempt++) {
       const current=await client.getTransaction({id:initial.id});
       const transaction=current.data?.transaction;
       if(transaction) {
+        if(transaction.id!==initial.id)throw new Error('CIRCLE_OPERATION_ID_MISMATCH');
         state=transaction.state;
-        txHash=transaction.txHash;
+        txHash=transaction.txHash ? hex32.parse(transaction.txHash) : undefined;
+        if(txHash && txHash!==reportedTxHash) {
+          reportedTxHash=txHash;
+          await report?.({externalOperationId:initial.id,state,txHash});
+        }
         if(['COMPLETE','FAILED','DENIED','CANCELLED','STUCK'].includes(state))break;
       }
       await new Promise(resolve=>setTimeout(resolve,2000));

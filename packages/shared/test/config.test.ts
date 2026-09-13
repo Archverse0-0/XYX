@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { loadConfig, commonConfig, apiConfig, witnessConfig } from '../src/config.js';
+import { loadConfig, commonConfig, apiConfig, witnessConfig, requireOpenPurchaseRuntimeConfig, requireWitnessRuntimeConfig } from '../src/config.js';
 import commerceDeployment from '../../erc8183/deployment.json' with { type: 'json' };
 
 const baseEnv: Record<string,string> = {
@@ -16,6 +16,73 @@ const baseEnv: Record<string,string> = {
   IPFS_API_URL: 'http://localhost:5001',
   INTERNAL_SERVICE_TOKEN: 'a'.repeat(32),
 };
+
+const protectedPreA4Env: Record<string,string> = {
+  DATABASE_URL: 'postgresql://test:test@localhost:5432/xyx',
+  ARC_RPC_URL: 'https://rpc.testnet.arc.io',
+  CIRCLE_AGENT_ADDRESS: '0x' + '1'.repeat(40),
+  CIRCLE_API_KEY: 'test-circle-api-key',
+  CIRCLE_ENTITY_SECRET: 'test-circle-entity-secret',
+  GRAPH_URL: 'https://api.studio.thegraph.com/query/123/xyx',
+  GRAPH_DEPLOYMENT_ID: 'QmTestDeploymentId',
+  XYX_EVALUATOR_ADDRESS: '0x' + '2'.repeat(40),
+  PRIVY_APP_ID: 'test-privy-app',
+  PRIVY_VERIFICATION_KEY: 'test-privy-key',
+  OPERATOR_PRIVY_DID: 'did:privy:test-operator',
+  PROTECTED_JOB_PROVIDER_ADDRESS: '0x' + '3'.repeat(40),
+};
+
+const fullApiEnv: Record<string,string> = {
+  ...protectedPreA4Env,
+  EVIDENCE_REGISTRY_ADDRESS: '0x' + '4'.repeat(40),
+  INTERNAL_SERVICE_TOKEN: 'i'.repeat(32),
+  WITNESS_URL: 'http://localhost:3002',
+  LLM_COMPLETIONS_URL: 'http://localhost:8080',
+  LLM_MODEL: 'test-model',
+  LLM_API_KEY: 'test-llm-key',
+  IPFS_API_URL: 'http://localhost:5001',
+};
+
+test('minimal Protected pre-A4 API config parses without later feature config', () => {
+  const cfg=loadConfig(apiConfig, protectedPreA4Env);
+  assert.equal(cfg.LLM_COMPLETIONS_URL, undefined);
+  assert.equal(cfg.WITNESS_URL, undefined);
+  assert.equal(cfg.INTERNAL_SERVICE_TOKEN, undefined);
+  assert.equal(cfg.EVIDENCE_REGISTRY_ADDRESS, undefined);
+  assert.equal(cfg.IPFS_API_URL, undefined);
+  assert.equal(cfg.IPFS_PROVIDER, 'kubo');
+});
+
+test('genuine Protected pre-A4 fields remain required', () => {
+  for (const field of ['DATABASE_URL','ARC_RPC_URL','GRAPH_URL','GRAPH_DEPLOYMENT_ID','CIRCLE_API_KEY','CIRCLE_ENTITY_SECRET','PRIVY_APP_ID','PRIVY_VERIFICATION_KEY','OPERATOR_PRIVY_DID']) {
+    const env={...protectedPreA4Env}; delete env[field];
+    assert.throws(()=>loadConfig(apiConfig,env),/CONFIGURATION_REQUIRED/,field);
+  }
+});
+
+test('invalid buyer and evaluator addresses remain rejected', () => {
+  assert.throws(()=>loadConfig(apiConfig,{...protectedPreA4Env,CIRCLE_AGENT_ADDRESS:'not-an-address'}),/CONFIGURATION_REQUIRED/);
+  assert.throws(()=>loadConfig(apiConfig,{...protectedPreA4Env,XYX_EVALUATOR_ADDRESS:'0x'+'0'.repeat(40)}),/CONFIGURATION_REQUIRED/);
+});
+
+test('full API config remains compatible when all feature fields are present', () => {
+  const cfg=loadConfig(apiConfig,fullApiEnv);
+  assert.equal(cfg.WITNESS_URL,fullApiEnv.WITNESS_URL);
+  assert.equal(cfg.LLM_MODEL,fullApiEnv.LLM_MODEL);
+  assert.equal(cfg.IPFS_API_URL,fullApiEnv.IPFS_API_URL);
+});
+
+test('feature guards fail closed without later configuration', () => {
+  const cfg=loadConfig(apiConfig,protectedPreA4Env);
+  assert.throws(()=>requireOpenPurchaseRuntimeConfig(cfg),/EVIDENCE_REGISTRY_NOT_CONFIGURED/);
+  assert.throws(()=>requireWitnessRuntimeConfig(cfg),/WITNESS_NOT_CONFIGURED/);
+});
+
+test('feature guards accept a complete later configuration', () => {
+  const cfg=loadConfig(apiConfig,fullApiEnv);
+  assert.equal(requireOpenPurchaseRuntimeConfig(cfg).LLM_MODEL,fullApiEnv.LLM_MODEL);
+  assert.equal(requireWitnessRuntimeConfig(cfg).WITNESS_URL,fullApiEnv.WITNESS_URL);
+});
 
 test('ERC-8183 address defaults to Arc reference deployment from deployment.json', () => {
   const cfg = loadConfig(commonConfig, baseEnv);

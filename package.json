@@ -18,9 +18,9 @@
     "subgraph:render": "node scripts/render-subgraph.mjs",
     "subgraph:codegen": "npm run subgraph:render && (cd packages/subgraph && graph codegen subgraph.yaml)",
     "subgraph:build": "npm run subgraph:render && (cd packages/subgraph && graph build subgraph.yaml)",
-    "verify:live": "tsx scripts/verify-live.ts",
-    "verify:ipfs-live": "tsx scripts/verify-ipfs-live.ts",
-    "verify:protected-job": "tsx scripts/verify-protected-job.ts"
+    "verify:live": "tsx --env-file-if-exists=.env scripts/verify-live.ts",
+    "verify:ipfs-live": "tsx --env-file-if-exists=.env.witness scripts/verify-ipfs-live.ts",
+    "verify:protected-job": "tsx --env-file-if-exists=.env.witness scripts/verify-protected-job.ts"
   },
   "dependencies": {
     "@circle-fin/developer-controlled-wallets": "^9.6.0",
@@ -30,12 +30,7 @@
     "@privy-io/react-auth": "3.8.1",
     "@privy-io/wagmi": "latest",
     "@react-three/fiber": "9.7.0",
-    "@solana-program/memo": "0.10.0",
-    "@solana-program/system": "0.10.0",
-    "@solana-program/token": "0.9.0",
-    "@solana/kit": "5.5.1",
     "@tanstack/react-query": "^5.90.0",
-    "@x402/svm": "^2.21.0",
     "ajv": "^8.17.1",
     "fastify": "^5.6.0",
     "gsap": "3.15.0",
@@ -53,11 +48,14 @@
   },
   "devDependencies": {
     "@graphprotocol/graph-cli": "^0.98.1",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
     "@types/node": "^24.0.0",
     "@types/pg": "^8.15.0",
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@types/three": "0.185.4",
+    "jsdom": "^30.0.1",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
   }

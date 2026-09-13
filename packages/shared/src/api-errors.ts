@@ -3,6 +3,7 @@ const conflicts=new Set(['IDEMPOTENCY_CONFLICT','JOB_BUSY','JOB_RECONCILIATION_R
   'JOB_CONFIGURATION_CHANGED','JOB_PARTICIPANTS_MISMATCH','JOB_BUDGET_MISMATCH','PROVIDER_SELECTION_REQUIRED',
   'PROVIDER_SELECTION_INVALID','PROVIDER_SELECTION_ALREADY_USED','PROVIDER_SELECTION_FAILED','SELECTION_CONFLICT']);
 const invalid=new Set(['INVALID_EXPIRY','INVALID_DESCRIPTION','PROVIDER_WALLET_MISMATCH','JOB_BUDGET_EXCEEDED','DELIVERABLE_TOO_LARGE','MACHINE_ACTION_NOT_IMPLEMENTED']);
+const unavailable=new Set(['OPEN_PURCHASE_NOT_CONFIGURED','WITNESS_NOT_CONFIGURED','IPFS_STORAGE_CONFIGURATION_REQUIRED','INTERNAL_SERVICE_AUTH_NOT_CONFIGURED','EVIDENCE_REGISTRY_NOT_CONFIGURED']);
 export function apiError(error:unknown) {
   if(error instanceof z.ZodError)return {status:400,error:'INVALID_INPUT'};
   const code=error instanceof Error?error.message:'';
@@ -10,6 +11,7 @@ export function apiError(error:unknown) {
   if(invalid.has(code))return {status:400,error:code};
   if(code==='JOB_NOT_FOUND')return {status:404,error:code};
   if(code==='PROTECTED_JOB_NOT_CONFIGURED')return {status:503,error:code};
+  if(unavailable.has(code))return {status:503,error:code};
   // Dependency errors may contain URLs, tokens or SQL values. Never echo them.
   return {status:503,error:'DEPENDENCY_OR_OPERATION_UNAVAILABLE'};
 }

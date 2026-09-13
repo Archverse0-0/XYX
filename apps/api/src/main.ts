@@ -2,7 +2,7 @@ import Fastify from 'fastify';
 import { verifyAccessToken } from '@privy-io/node';
 import { z } from 'zod';
 import { formatUnits, type Address } from 'viem';
-import { loadConfig, apiConfig } from '../../../packages/shared/src/config.js';
+import { loadConfig, apiConfig, requireOpenPurchaseRuntimeConfig } from '../../../packages/shared/src/config.js';
 import { poolFor, createRun } from '../../../packages/shared/src/storage.js';
 import { arcClient, usdcBalance } from '../../../packages/shared/src/chain.js';
 import { GraphClient } from '../../../packages/shared/src/graph.js';
@@ -13,10 +13,29 @@ import { registerJobs } from './jobs.js';
 import { apiError } from '../../../packages/shared/src/api-errors.js';
 const cfg=loadConfig(apiConfig);
 const db=poolFor(cfg.DATABASE_URL),graph=new GraphClient(cfg.GRAPH_URL,cfg.GRAPH_DEPLOYMENT_ID);
-const planner=new Planner(cfg.LLM_COMPLETIONS_URL,cfg.LLM_MODEL,cfg.LLM_API_KEY);
-const runtime=new BuyerRuntime(db,graph,cfg.ARC_RPC_URL,planner,cfg.CIRCLE_AGENT_ADDRESS as Address,cfg.WITNESS_URL,cfg.INTERNAL_SERVICE_TOKEN,cfg.MAX_GRAPH_LAG_BLOCKS);
+let openPurchaseRuntime: BuyerRuntime | undefined;
+const requireOpenPurchaseRuntime = () => {
+  const feature=requireOpenPurchaseRuntimeConfig(cfg);
+  if(!openPurchaseRuntime) {
+    const planner=new Planner(feature.LLM_COMPLETIONS_URL,feature.LLM_MODEL,feature.LLM_API_KEY);
+    openPurchaseRuntime=new BuyerRuntime(db,graph,cfg.ARC_RPC_URL,planner,cfg.CIRCLE_AGENT_ADDRESS as Address,feature.WITNESS_URL,feature.INTERNAL_SERVICE_TOKEN,cfg.MAX_GRAPH_LAG_BLOCKS);
+  }
+  return openPurchaseRuntime;
+};
 const app=Fastify({bodyLimit:32768,logger:{redact:['req.headers.authorization','req.body','res.body']}});
 const owners=new WeakMap<object,string>();
+const HEALTH_TIMEOUT_MS=5000;
+async function boundedHealthCheck(check:()=>Promise<unknown>,timeoutMs=HEALTH_TIMEOUT_MS) {
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  try {
+    await new Promise<void>((resolve,reject)=>{
+      timer=setTimeout(()=>reject(new Error('HEALTH_CHECK_TIMEOUT')),timeoutMs);
+      Promise.resolve().then(check).then(()=>resolve(),reject);
+    });
+  } finally {
+    if(timer)clearTimeout(timer);
+  }
+}
 app.addHook('onRequest',async(req,reply)=>{
   if(['/healthz','/readyz'].includes(req.url))return;
   try {
@@ -35,15 +54,29 @@ const health=async()=>{
   const checks:Record<string,boolean>={};
   await Promise.all(Object.entries({postgres:()=>db.query('SELECT 1'),graph:()=>graph.meta(),arc:async()=>{
     if(await arcClient(cfg.ARC_RPC_URL).getChainId()!==5042002)throw new Error('WRONG_CHAIN');
-  },witness:async()=>{
-    const res=await fetch(new URL('/healthz',cfg.WITNESS_URL),{headers:{authorization:`Bearer ${cfg.INTERNAL_SERVICE_TOKEN}`},signal:AbortSignal.timeout(30000)});
-    if(!res.ok)throw new Error('WITNESS_NOT_READY');
-  }}).map(async([name,check])=>{try{await check();checks[name]=true;}catch{checks[name]=false;}}));
-  return {ready:Object.values(checks).every(Boolean),checks};
+  }}).map(async([name,check])=>{try{await boundedHealthCheck(check);checks[name]=true;}catch{checks[name]=false;}}));
+  const witnessUrl=cfg.WITNESS_URL;
+  const internalToken=cfg.INTERNAL_SERVICE_TOKEN;
+  const witnessConfigured=Boolean(witnessUrl&&internalToken);
+  let witnessReady=false;
+  if(witnessUrl&&internalToken) {
+    try {
+      const res=await fetch(new URL('/healthz',witnessUrl),{headers:{authorization:`Bearer ${internalToken}`},signal:AbortSignal.timeout(HEALTH_TIMEOUT_MS)});
+      witnessReady=res.ok;
+    } catch { witnessReady=false; }
+  }
+  const plannerConfigured=Boolean(cfg.LLM_COMPLETIONS_URL&&cfg.LLM_MODEL&&cfg.LLM_API_KEY);
+  return {ready:Object.values(checks).every(Boolean),checks,capabilities:{
+    protectedPreA4Configured:Boolean(cfg.PROTECTED_JOB_PROVIDER_ADDRESS),
+    openPurchaseConfigured:plannerConfigured&&witnessConfigured&&Boolean(cfg.EVIDENCE_REGISTRY_ADDRESS),
+    witness:{configured:witnessConfigured,ready:witnessReady},
+    planner:{configured:plannerConfigured},
+  }};
 };
 for(const path of ['/healthz','/readyz'])app.get(path,async(_,reply)=>{const status=await health();return reply.code(status.ready?200:503).send(status);});
 app.get('/api/v1/wallet',async()=>{const b=await usdcBalance(arcClient(cfg.ARC_RPC_URL),cfg.CIRCLE_AGENT_ADDRESS as Address);return {address:cfg.CIRCLE_AGENT_ADDRESS,chainId:5042002,decimals:b.decimals,balance:formatUnits(b.balance,b.decimals)};});
 app.post('/api/v1/agent/runs',async(req,reply)=>{
+  const runtime=requireOpenPurchaseRuntime();
   const input=z.object({objective:z.string().min(1).max(10000),policy:policySchema}).strict().parse(req.body);
   const key=z.string().uuid().parse(req.headers['idempotency-key']);
   if(!(await health()).ready)return reply.code(503).send({error:'LIVE_DEPENDENCIES_NOT_READY'});
@@ -79,6 +112,7 @@ app.get('/api/v1/agent/runs/:runId/events',async(req,reply)=>{
   finally {reply.raw.removeListener('close',onClose);reply.raw.end();}
 });
 app.post('/api/v1/risk/evaluate',async(req)=>{
+  const runtime=requireOpenPurchaseRuntime();
   const input=z.object({intent:intentSchema,objective:z.string().min(1).max(10000)}).strict().parse(req.body);
   const {decision,rejections}=await runtime.assess(input.intent,input.objective);return {decision,rejections};
 });
