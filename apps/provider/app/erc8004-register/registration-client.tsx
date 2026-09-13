@@ -23,28 +23,11 @@ import {
   tokenUriCalldata,
   type ReceiptLog,
 } from '../../lib/erc8004-registration';
-
-type Eip1193Provider = {
-  isRabby?: boolean;
-  providers?: Eip1193Provider[];
-  request: (request: { method: string; params?: unknown[] }) => Promise<unknown>;
-  on?: (event: 'accountsChanged' | 'chainChanged', listener: (...args: unknown[]) => void) => void;
-  removeListener?: (event: 'accountsChanged' | 'chainChanged', listener: (...args: unknown[]) => void) => void;
-};
+import { discoverEvmProvider, type Eip1193Provider } from '../../lib/evm-provider';
 
 type RegistrationState = 'IDLE' | 'SUBMITTED' | 'CONFIRMED' | 'REVERTED' | 'FAILED';
 
-declare global {
-  interface Window { ethereum?: Eip1193Provider; }
-}
-
 const broadcastLocked = false;
-
-function rabbyProvider(): Eip1193Provider | null {
-  const injected = window.ethereum;
-  if (!injected) return null;
-  return [...(injected.providers ?? []), injected].find(provider => provider.isRabby) ?? null;
-}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -91,9 +74,9 @@ export default function RegistrationClient() {
 
   const connect = async () => {
     setError(undefined);
-    const selected = rabbyProvider();
+    const selected = discoverEvmProvider();
     if (!selected) {
-      setError('RABBY_NOT_DETECTED: install or unlock Rabby, then reload this local page.');
+      setError('EVM_WALLET_NOT_DETECTED: connect a compatible EIP-1193 wallet, then reload this local page.');
       return;
     }
     try {
@@ -217,7 +200,7 @@ export default function RegistrationClient() {
   return <main style={{ fontFamily: 'system-ui', margin: '2rem auto', maxWidth: 900 }}>
     <h1>XYX ERC-8004 Provider Registration</h1>
     <p><strong>Development-only.</strong> This page returns 404 in production and never accepts a private key.</p>
-    <button type="button" onClick={() => void connect()}>Connect Rabby</button>
+    <button type="button" onClick={() => void connect()}>Connect EVM Wallet</button>
     <p>Wallet: {account ?? 'Not connected'}</p>
     <p>Expected wallet: {PROVIDER_WALLET}</p>
     <p>Wallet check: {account ? (accountMatches ? 'MATCHED' : 'WRONG WALLET — registration disabled') : 'PENDING'}</p>
@@ -240,7 +223,7 @@ export default function RegistrationClient() {
     <label htmlFor="confirmation">Type <code>{REQUIRED_CONFIRMATION}</code> to acknowledge the transaction:</label><br />
     <input id="confirmation" value={confirmation} onChange={event => setConfirmation(event.target.value)} autoComplete="off" />
     <p>Safety gates: {safetyChecksPass ? 'PASSED' : 'PENDING OR FAILED'}</p>
-    <p><strong>Manual broadcast:</strong> enabled only after every safety gate passes and the exact confirmation text is entered. Rabby must still approve the transaction.</p>
+    <p><strong>Manual broadcast:</strong> enabled only after every safety gate passes and the exact confirmation text is entered. Your connected EVM wallet must still approve the transaction.</p>
     <button type="button" disabled={!sendEnabled} onClick={() => void send()}>Send / Register</button>
     <p>Transaction state: {registrationState}</p>
     {transactionHash && <p>Transaction hash: {transactionHash}</p>}

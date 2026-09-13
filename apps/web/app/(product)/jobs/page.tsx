@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { useAPI } from '../../../components/client';
 import { JobControls } from '../../../components/product/JobControls';
 import { useQuery } from '@tanstack/react-query';
+import { usePrivy } from '@privy-io/react-auth';
 
 // Truthful v1.2 state mapping for Graph-backed list rows
 type GraphState = 'Open' | 'Funded' | 'Submitted' | 'Completed' | 'Rejected' | 'Expired';
@@ -33,7 +34,8 @@ function SafeTruncate(value: string, label: string) {
 
 export default function Jobs() {
   const api=useAPI();
-  const q = useQuery({ queryKey: ['jobs'], queryFn: async () => (await api('/api/v1/jobs')).json() });
+  const { authenticated } = usePrivy();
+  const q = useQuery({ queryKey: ['jobs'], queryFn: async () => (await api('/api/v1/jobs')).json(), enabled: authenticated });
   const jobs = (q.data?.jobs ?? []) as Array<Record<string, unknown>>;
 
   return (
@@ -58,7 +60,9 @@ export default function Jobs() {
               Status reflects ERC-8183 on-chain state. Graph/Risk is selection history only.</p>
           </div>
         </div>
-        {q.isLoading ? (
+        {!authenticated ? (
+          <p>Log in with Privy to view indexed jobs.</p>
+        ) : q.isLoading ? (
           <p>Loading jobs…</p>
         ) : q.error ? (
           <div className="error" role="alert">Protected-job history is unavailable from the live Graph.</div>

@@ -32,6 +32,8 @@ type Runs = {
   runs: JobRun[];
 };
 
+const CREATE_AMBIGUITY_MESSAGE = 'Creation outcome is ambiguous. XYX blocked automatic retry to prevent a duplicate on-chain job. Reconciliation is required.';
+
 // ─── Truthful v1.2 state mapping ──────────────────────────────────────
 const STATE_LABEL: Record<string, { label: string; className: string; description: string }> = {
   PREPARING: { label: 'Preparing', className: 'state-preparing', description: 'Job request being prepared; no transaction confirmed yet' },
@@ -70,6 +72,13 @@ function StateBadge({ state }: { state: string }) {
 // Provider links may contain only validated jobId/action/deliverableHash.
 // Never expose secrets or personal data in public links.
 const VALID_ACTIONS = new Set(['execute', 'submit', 'setBudget']);
+const DEFAULT_PROTECTED_DESCRIPTION = 'Normalize this text:   hello   protected   XYX';
+const DEFAULT_PROTECTED_ENDPOINT = 'https://xyx-provider.vercel.app/api/task';
+const DEFAULT_PROTECTED_BUDGET = '0.01';
+const DEFAULT_PROTECTED_EXPECTED = JSON.stringify({
+  ok: true,
+  result: { normalized: 'hello protected XYX' },
+}, null, 2);
 
 function validateProviderLinkParams(params: Record<string, unknown>): boolean {
   const jobId = typeof params.jobId === 'string' ? params.jobId : null;
@@ -125,10 +134,41 @@ function JobActions({ run, configured, refresh }: { run: JobRun; configured: boo
   const [deliverable, setDeliverable] = useState('');
   const [submissionTxHash, setSubmissionTxHash] = useState('');
   const [busy, setBusy] = useState(false);
+  const [selectionId, setSelectionId] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
 
   const uncertain = run.operations?.some(op => op.state !== 'CONFIRMED');
+  const createUncertain = run.operations?.some(op => op.operation === 'create' && op.state !== 'CONFIRMED');
+
+  async function reconcileCreate() {
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    setNotice('Checking existing creation evidence. No blockchain transaction will be sent.');
+    try {
+      const response = await api(`/api/v1/job-runs/${run.id}/reconcile-create`, { method: 'POST', body: '{}' });
+      const result = await response.json();
+      if (result.status === 'STILL_AMBIGUOUS') {
+        setNotice('No matching on-chain creation proof was found. No transaction was sent; this run remains blocked for reconciliation.');
+        setError('Creation remains ambiguous — automatic retry is disabled.');
+        return;
+      }
+      if (result.status === 'CANONICAL_CONFLICT') {
+        setNotice('Stored creation data conflicts with canonical chain state. No transaction was sent.');
+        setError('Canonical conflict — do not retry this run.');
+        return;
+      }
+      if (result.status !== 'RECOVERED_CONFIRMED') throw new Error('JOB_RECONCILIATION_REQUIRED');
+      setNotice(`Existing job ${result.result.jobId} verified. No new job was created.`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Reconciliation unavailable');
+      setNotice(CREATE_AMBIGUITY_MESSAGE);
+    } finally {
+      await refresh().catch(() => setError('Operational state refresh unavailable'));
+      setBusy(false);
+    }
+  }
 
   const isFundable = run.state === 'OPEN' || run.state === 'AWAITING_PROVIDER_BUDGET';
   const isSubmittable = run.state === 'FUNDED' || run.state === 'AWAITING_PROVIDER_SUBMISSION';
@@ -227,11 +267,14 @@ function JobActions({ run, configured, refresh }: { run: JobRun; configured: boo
       )}
 
       {run.operations && run.operations.length > 0 && (
-        <ul>{run.operations.map(op => <li key={op.operation}>{op.operation}: {op.state}</li>)}</ul>
+        <ul>{run.operations.map((op, index) => <li key={`${op.operation}-${index}`}>{op.operation}: {op.state}</li>)}</ul>
       )}
       {uncertain && (
         <p className="notice" role="alert">An operation is in flight or requires reconciliation. Automatic resubmission is blocked to prevent duplicate spending.</p>
       )}
+      {createUncertain && <button disabled={busy || !configured} onClick={() => void reconcileCreate()}>
+        Check existing creation — no transaction
+      </button>}
 
       <fieldset disabled={busy || uncertain || !configured || !run.job_id}>
         {isFundable && (
@@ -299,18 +342,46 @@ export function JobControls({ jobId }: { jobId?: string }) {
     refetchInterval: 15000,
   });
 
-  const [description, setDescription] = useState('');
-  const [budget, setBudget] = useState('');
-  const [expected, setExpected] = useState('');
-  const [providerEndpoint, setProviderEndpoint] = useState('');
+  const [description, setDescription] = useState(DEFAULT_PROTECTED_DESCRIPTION);
+  const [budget, setBudget] = useState(DEFAULT_PROTECTED_BUDGET);
+  const [expected, setExpected] = useState(DEFAULT_PROTECTED_EXPECTED);
+  const [providerEndpoint, setProviderEndpoint] = useState(DEFAULT_PROTECTED_ENDPOINT);
   const [capability, setCapability] = useState('normalize-text');
   const [taskCategory, setTaskCategory] = useState<'deliverable'|'machine-action'>('deliverable');
   const [busy, setBusy] = useState(false);
+  const [selectionId, setSelectionId] = useState<string | null>(null);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const request = useRef<{ key: string; body: string } | null>(null);
+  const [createUncertain, setCreateUncertain] = useState(false);
+  const unresolvedCreate = q.data?.runs.some(run => run.operations?.some(op => op.operation === 'create' && op.state !== 'CONFIRMED')) ?? false;
+
+  async function selectProvider() {
+    if (busy || createUncertain || unresolvedCreate || selectionId) return;
+    setBusy(true);
+    setError('');
+    setNotice('Checking ERC-8004 identity, Graph freshness, and deterministic Risk Engine selection…');
+    try {
+      const response = await api('/api/v1/jobs/select-provider', {
+        method: 'POST',
+        body: JSON.stringify({ endpoint: providerEndpoint, capability, budgetUsdc: budget, taskCategory }),
+      });
+      const selection = await response.json();
+      if (!response.ok || selection.status !== 'SELECTED' || !/^0x[0-9a-fA-F]{64}$/.test(selection.selectionId ?? '')) {
+        throw new Error(selection.error ?? 'Provider selection failed closed');
+      }
+      setSelectionId(selection.selectionId);
+      setNotice(`Provider selected: ${selection.provider?.wallet ?? q.data?.provider ?? 'configured provider'}. Selection commitment recorded. No transaction was sent.`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Provider selection failed');
+      setNotice('Selection stopped. No create request or transaction was sent.');
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function create() {
+    if (busy || createUncertain || unresolvedCreate || request.current) return;
     setBusy(true);
     setError('');
     setNotice('Preparing job request. No transaction is confirmed yet.');
@@ -324,19 +395,16 @@ export function JobControls({ jobId }: { jobId?: string }) {
       }
       expectedValue = parsed.value;
 
+      if (!selectionId) throw new Error('Run provider selection before creating the job');
       if (!request.current) {
-        const selection=await (await api('/api/v1/jobs/select-provider',{method:'POST',body:JSON.stringify({
-          endpoint:providerEndpoint,capability,budgetUsdc:budget,taskCategory,
-        })})).json();
-        if(selection.status!=='SELECTED'||!/^0x[0-9a-fA-F]{64}$/.test(selection.selectionId??''))throw new Error('Provider selection failed closed');
         request.current = {
           key: crypto.randomUUID(),
           body: JSON.stringify({
             provider: q.data?.provider,
-            selectionId:selection.selectionId,
+            selectionId,
             budgetUsdc: budget,
             description,
-            expiresAt: Math.floor(Date.now() / 1000) + 86400,
+            expiresAt: Math.floor(Date.now() / 1000) + 6 * 60 * 60,
             evaluation: { kind: 'exact-json-v1', expected: expectedValue },
           }),
         };
@@ -353,13 +421,14 @@ export function JobControls({ jobId }: { jobId?: string }) {
         setNotice('Job request accepted. Check operational state for confirmation.');
       }
       request.current = null;
-      setDescription('');
-      setBudget('');
-      setExpected('');
-      setProviderEndpoint('');
+      setDescription(DEFAULT_PROTECTED_DESCRIPTION);
+      setBudget(DEFAULT_PROTECTED_BUDGET);
+      setExpected(DEFAULT_PROTECTED_EXPECTED);
+      setProviderEndpoint(DEFAULT_PROTECTED_ENDPOINT);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Job request stopped');
-      setNotice('Confirmation unavailable. Inspect operational state before retrying. A retry reuses the same request key.');
+      setCreateUncertain(!!request.current);
+      setNotice(request.current ? CREATE_AMBIGUITY_MESSAGE : 'Provider selection did not complete. No create request was sent.');
     } finally {
       setBusy(false);
       await q.refetch();
@@ -391,24 +460,24 @@ export function JobControls({ jobId }: { jobId?: string }) {
 
           {!jobId && (
             <form onSubmit={e => { e.preventDefault(); void create(); }}>
-              <fieldset disabled={busy || !q.data?.configured}>
+              <fieldset disabled={busy || createUncertain || !q.data?.configured}>
                 <label htmlFor="job-description">Objective / work description</label>
                 <textarea
                   id="job-description"
                   required
                   maxLength={2000}
                   value={description}
-                  readOnly={!!request.current}
+                  readOnly={!!request.current || !!selectionId}
                   onChange={e => setDescription(e.target.value)}
                 />
                 <label htmlFor="provider-endpoint">Provider HTTPS endpoint registered in ERC-8004</label>
-                <input id="provider-endpoint" type="url" required value={providerEndpoint} readOnly={!!request.current}
+                <input id="provider-endpoint" type="url" required value={providerEndpoint} readOnly={!!request.current || !!selectionId}
                   onChange={event=>setProviderEndpoint(event.target.value)} placeholder="https://provider.example/api/task" />
                 <label htmlFor="job-capability">Required capability</label>
-                <input id="job-capability" required maxLength={200} value={capability} readOnly={!!request.current}
+                <input id="job-capability" required maxLength={200} value={capability} readOnly={!!request.current || !!selectionId}
                   onChange={event=>setCapability(event.target.value)} />
                 <label htmlFor="job-class">Execution class</label>
-                <select id="job-class" value={taskCategory} disabled={!!request.current}
+                <select id="job-class" value={taskCategory} disabled={!!request.current || !!selectionId}
                   onChange={event=>setTaskCategory(event.target.value as 'deliverable'|'machine-action')}>
                   <option value="deliverable">Deliverable Job</option>
                   <option value="machine-action" disabled>Machine-Action Job (not implemented)</option>
@@ -419,7 +488,7 @@ export function JobControls({ jobId }: { jobId?: string }) {
                   inputMode="decimal"
                   required
                   value={budget}
-                  readOnly={!!request.current}
+                  readOnly={!!request.current || !!selectionId}
                   onChange={e => setBudget(e.target.value)}
                 />
                 <p className="muted">The buyer confirms this budget. Provider cannot exceed it. Changes post-funding require a new job.</p>
@@ -430,29 +499,35 @@ export function JobControls({ jobId }: { jobId?: string }) {
                   required
                   maxLength={16000}
                   value={expected}
-                  readOnly={!!request.current}
+                  readOnly={!!request.current || !!selectionId}
                   onChange={e => setExpected(e.target.value)}
                 />
                 <p className="muted">
                   This verifier checks exact JSON content, not arbitrary natural-language quality.
                   The criterion is committed before funding.
                   Submitted deliverables and evidence are publicly stored on IPFS: do not include secrets or personal data.
-                  Expiry is 24 hours after the first request.
+                  Expiry is approximately six hours after creation.
                   Supported format: <code>exact-json-v1</code> (canonical JSON comparison).
                 </p>
 
                 <p className="mono">Configured provider: {q.data?.provider ?? 'Not configured'}</p>
                 <p className="muted">Before creation, the API verifies ERC-8004 identity, Graph provenance/freshness, and deterministic Risk, then journals the selection commitment.</p>
 
-                <button type="submit">
-                  {busy ? 'Preparing / awaiting confirmation…' : request.current ? 'Retry same request' : 'Create unfunded job'}
+                <button type="button" onClick={() => void selectProvider()} disabled={busy || !!selectionId}>
+                  {selectionId ? 'Provider selection confirmed' : busy ? 'Selecting provider…' : 'Run provider selection (no transaction)'}
                 </button>
+                <button type="submit" disabled={!selectionId || unresolvedCreate}>
+                  {busy ? 'Preparing / awaiting confirmation…' : createUncertain || unresolvedCreate ? 'Creation blocked — reconciliation required' : 'Create unfunded job'}
+                </button>
+                {notice && <p role="status" className="mono">{notice}</p>}
+                {error && <p role="alert" className="error">{error}</p>}
               </fieldset>
             </form>
           )}
 
           {error && <p role="alert" className="error">{error}</p>}
           {notice && <p role="status">{notice}</p>}
+          {unresolvedCreate && <p role="alert" className="notice">{CREATE_AMBIGUITY_MESSAGE}</p>}
 
           {!q.data?.runs.length && <p>No operational jobs have been recorded for this account.</p>}
 

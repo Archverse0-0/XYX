@@ -16,8 +16,19 @@ export class ProviderWalletService {
   invalidateSimulation(){this.simulation=null;}
   requiresConfirmation(action:ProviderAction,jobId:string){return action==='setBudget'?`SET BUDGET ${jobId}`:`SUBMIT DELIVERABLE ${jobId}`;}
   private async read(jobId:string):Promise<ChainJob>{
-    const result=await this.client.readContract({address:this.config.erc8183Address as Address,abi:commerceABI,functionName:'getJob',args:[BigInt(jobId)]}) as readonly [bigint,Address,Address,Address,string,bigint,bigint,number,Address];
-    return {id:result[0],client:result[1],provider:result[2],evaluator:result[3],description:result[4],budget:result[5],expiredAt:result[6],status:Number(result[7]),hook:result[8]};
+    const result=await this.client.readContract({address:this.config.erc8183Address as Address,abi:commerceABI,functionName:'getJob',args:[BigInt(jobId)]}) as {
+      id: bigint;
+      client: Address;
+      provider: Address;
+      evaluator: Address;
+      description: string;
+      budget: bigint;
+      expiredAt: bigint;
+      status: number;
+      hook: Address;
+    };
+    return {id:result.id,client:result.client,provider:result.provider,evaluator:result.evaluator,description:result.description,budget:result.budget,
+      expiredAt:result.expiredAt,status:result.status,hook:result.hook};
   }
   async inspectJob(jobId:string,action:ProviderAction){
     const job=await this.read(jobId);const errors:string[]=[];

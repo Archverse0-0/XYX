@@ -44,7 +44,7 @@ export default function OperatorTX2Page() {
       if (accounts.length > 0) {
         setConnected(true);
         setAddress(accounts[0]);
-        const chain = await window.ethereum.request({ method: 'eth_chainId' }) as string;
+        const chain = await window.ethereum!.request({ method: 'eth_chainId' }) as string;
         setChainId(parseInt(chain, 16));
         setStatus('Wallet connected. Ready.');
       } else {
@@ -57,10 +57,10 @@ export default function OperatorTX2Page() {
 
   async function connectWallet() {
     try {
-      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' }) as string[];
+      const accounts = await window.ethereum!.request({ method: 'eth_requestAccounts' }) as string[];
       setConnected(true);
       setAddress(accounts[0]);
-      const chain = await window.ethereum.request({ method: 'eth_chainId' }) as string;
+      const chain = await window.ethereum!.request({ method: 'eth_chainId' }) as string;
       setChainId(parseInt(chain, 16));
       setStatus('Wallet connected. Ready.');
     } catch (error) {
@@ -70,7 +70,7 @@ export default function OperatorTX2Page() {
 
   async function switchToArcTestnet() {
     try {
-      await window.ethereum.request({
+      await window.ethereum!.request({
         method: 'wallet_switchEthereumChain',
         params: [{ chainId: '0x' + ARC_TESTNET_CHAIN_ID.toString(16) }],
       });
@@ -111,7 +111,7 @@ export default function OperatorTX2Page() {
 
       setStatus('Transaction prepared. Check Rabby for confirmation...');
 
-      const txHash = await window.ethereum.request({
+      const txHash = await window.ethereum!.request({
         method: 'eth_sendTransaction',
         params: [
           {

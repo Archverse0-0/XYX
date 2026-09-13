@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useQuery } from '@tanstack/react-query';
 import { useAPI } from '../../../../components/client';
 import { JobControls } from '../../../../components/product/JobControls';
+import { usePrivy } from '@privy-io/react-auth';
 
 // ─── Truthful v1.2 state mapping ─────────────────────────────────────────
 // Graph returns numeric status; map to PRD v1.2 lifecycle states.
@@ -68,19 +69,20 @@ function SafeHash({ value, label }: { value: string; label: string }) {
 export default function Job() {
   const { jobId } = useParams<{ jobId: string }>();
   const api = useAPI();
+  const { authenticated } = usePrivy();
 
   // Graph-backed job state (settlement view)
   const q = useQuery({
     queryKey: ['job', jobId],
     queryFn: async () => (await api(`/api/v1/jobs/${jobId}`)).json(),
-    enabled: !!jobId,
+    enabled: !!jobId && authenticated,
   });
 
   // Operational runs (includes PREPARING, uncertain ops)
   const runQ = useQuery({
     queryKey: ['job-runs', jobId],
     queryFn: async () => (await api('/api/v1/job-runs')).json(),
-    enabled: !!jobId,
+    enabled: !!jobId && authenticated,
   });
 
   const data = q.data?.data?.job ?? q.data?.job ?? null;
@@ -118,7 +120,9 @@ export default function Job() {
           </div>
         </div>
 
-        {q.isLoading ? (
+        {!authenticated ? (
+          <p>Log in with Privy to view this job&apos;s indexed state.</p>
+        ) : q.isLoading ? (
           <p>Loading job from Graph…</p>
         ) : q.error ? (
           <div className="error" role="alert">

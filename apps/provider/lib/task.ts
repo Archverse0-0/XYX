@@ -28,6 +28,23 @@ export function normalizeTask(input: unknown): TaskResult {
   return { normalized };
 }
 
+export async function executeProviderTask(endpoint: string, text: string): Promise<TaskResult> {
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text }),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.error ?? `PROVIDER_HTTP_${response.status}`);
+  }
+  const body = await response.json() as Record<string, unknown>;
+  if (!body.ok || typeof body.result !== 'object' || body.result === null || typeof (body.result as Record<string, unknown>).normalized !== 'string') {
+    throw new Error('PROVIDER_RESPONSE_INVALID');
+  }
+  return body.result as TaskResult;
+}
+
 export async function parseTaskRequest(request: Request): Promise<TaskResult> {
   const declaredLength = request.headers.get('content-length');
   if (declaredLength && Number(declaredLength) > MAX_TASK_REQUEST_BYTES) {

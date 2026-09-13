@@ -30,7 +30,10 @@ export const BUDGET = getBudgetUsdc();
 
 // ─── ABI ─────────────────────────────────────────────────────────
 const commerceAbi = parseAbi([
-  'function getJob(uint256) view returns (uint256 id,address client,address provider,address evaluator,string description,uint256 budget,uint256 expiredAt,uint8 status,address hook)',
+  // ERC-8183 returns one Job struct (a tuple), not nine top-level return
+  // values. Keeping the tuple boundary is important for dynamic `description`
+  // decoding and prevents an address word from being interpreted as `status`.
+  'function getJob(uint256) view returns ((uint256 id,address client,address provider,address evaluator,string description,uint256 budget,uint256 expiredAt,uint8 status,address hook))',
   'function setBudget(uint256,uint256,bytes)',
   'function submit(uint256,bytes32,bytes)',
 ]);
@@ -50,9 +53,19 @@ export function readJobCalldata(jobId: bigint): `0x${string}` {
 }
 
 export function decodeJob(data: `0x${string}`): ChainJob {
-  const job=decodeFunctionResult({abi:commerceAbi,functionName:'getJob',data});
-  return {id:job[0],client:job[1],provider:job[2],evaluator:job[3],description:job[4],budget:job[5],
-    expiredAt:job[6],status:Number(job[7]),hook:job[8]};
+  const job = decodeFunctionResult({abi:commerceAbi,functionName:'getJob',data}) as {
+    id: bigint;
+    client: string;
+    provider: string;
+    evaluator: string;
+    description: string;
+    budget: bigint;
+    expiredAt: bigint;
+    status: number;
+    hook: string;
+  };
+  return {id:job.id,client:job.client,provider:job.provider,evaluator:job.evaluator,description:job.description,budget:job.budget,
+    expiredAt:job.expiredAt,status:job.status,hook:job.hook};
 }
 
 export function assertProviderJob(job: ChainJob, jobId: bigint, action: ProviderAction) {

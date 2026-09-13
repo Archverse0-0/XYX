@@ -17,15 +17,34 @@ import {
   type ProviderAction,
 } from '../../lib/protected-job-provider';
 import { ProviderWalletService, type TxState } from '../../lib/provider-wallet';
-import { normalizeTask } from '../../lib/task';
+import { executeProviderTask, TaskInputError } from '../../lib/task';
 import { hashJSON } from '../../../../packages/shared/src/index';
+import { injectedEvmProviders, type Eip1193Provider } from '../../lib/evm-provider';
 
-type WalletProvider = { isRabby?:boolean; request:(request:{method:string;params?:unknown[]})=>Promise<unknown>;
-  on?:(event:string,listener:()=>void)=>void; removeListener?:(event:string,listener:()=>void)=>void };
+// The provider execution endpoint is registered in ERC-8004 agent metadata.
+// It MUST be called to obtain the ACTUAL provider response before hashing.
+// Local text normalization alone is NOT a deliverable.
+const PROVIDER_ENDPOINT = 'https://xyx-provider.vercel.app/api/task';
 
-function rabbyProvider(): WalletProvider | null {
-  const injected=(window as unknown as {ethereum?:WalletProvider&{providers?:WalletProvider[]}}).ethereum;
-  return injected?.providers?.find(provider=>provider.isRabby) ?? (injected?.isRabby?injected:null) ?? null;
+const ARC_NETWORK_PARAMS = {
+  chainId: ARC_TESTNET_CHAIN_ID_HEX,
+  chainName: 'Arc Testnet',
+  nativeCurrency: { name: 'USDC', symbol: 'USDC', decimals: 18 },
+  rpcUrls: [ARC_TESTNET_RPC_URL],
+  blockExplorerUrls: ['https://testnet.arcscan.app'],
+};
+
+function providerErrorCode(error: unknown): number | undefined {
+  if (!error || typeof error !== 'object' || !('code' in error)) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'number' ? code : undefined;
+}
+
+function providerErrorMessage(error: unknown): string {
+  const code = providerErrorCode(error);
+  if (code === 4900) return 'EVM_WALLET_DISCONNECTED';
+  if (code === 4001) return 'WALLET_REQUEST_REJECTED';
+  return error instanceof Error ? error.message : 'unknown';
 }
 
 // ─── URL Parameters (validated, never trusted) ──────────────────
@@ -77,10 +96,12 @@ export default function ProtectedJobProviderClient() {
   const [chainMatches, setChainMatches] = useState(false);
   const [sendEnabled, setSendEnabled] = useState(false);
   const [blockers, setBlockers] = useState<string[]>([]);
+  // Deliverable hash computed during inspection from actual provider execution
+  const [computedDeliverableHash, setComputedDeliverableHash] = useState<Hex | undefined>(undefined);
 
   // Provider wallet service instance
   const walletServiceRef = useRef<ProviderWalletService | null>(null);
-  const injectedProviderRef = useRef<WalletProvider | null>(null);
+  const injectedProviderRef = useRef<Eip1193Provider | null>(null);
 
   // Sync URL params when they change
   useEffect(() => {
@@ -114,12 +135,34 @@ export default function ProtectedJobProviderClient() {
   const connectWallet = async () => {
     setError(undefined);
     try {
-      const wallet=rabbyProvider();
-      if(!wallet)throw new Error('RABBY_NOT_DETECTED');
-      const accounts=await wallet.request({method:'eth_requestAccounts'});
-      if(!Array.isArray(accounts)||typeof accounts[0]!=='string')throw new Error('NO_ACCOUNT_SELECTED');
-      injectedProviderRef.current=wallet;
-      const selected = accounts[0];
+      const wallets = injectedEvmProviders();
+      if (!wallets.length) throw new Error('EVM_WALLET_NOT_DETECTED');
+
+      // Browsers can expose several EIP-1193 providers. A disconnected
+      // provider must not prevent a healthy injected provider from being
+      // selected, so only 4900 is skipped while probing the next provider.
+      let wallet: Eip1193Provider | undefined;
+      let selected: string | undefined;
+      let lastError: unknown;
+      for (const candidate of wallets) {
+        try {
+          const accounts = await candidate.request({ method: 'eth_requestAccounts' });
+          if (Array.isArray(accounts) && typeof accounts[0] === 'string') {
+            wallet = candidate;
+            selected = accounts[0];
+            break;
+          }
+          lastError = new Error('NO_ACCOUNT_SELECTED');
+        } catch (candidateError) {
+          lastError = candidateError;
+          if (providerErrorCode(candidateError) !== 4900) throw candidateError;
+        }
+      }
+      if (!wallet || !selected) {
+        throw lastError instanceof Error ? lastError : new Error('NO_ACCOUNT_SELECTED');
+      }
+
+      injectedProviderRef.current = wallet;
       setProvider(selected);
 
       // Verify it matches the expected provider wallet
@@ -130,7 +173,34 @@ export default function ProtectedJobProviderClient() {
         setError(`WALLET_MISMATCH: connected ${selected.slice(0, 8)}... but expected ${PROVIDER_WALLET.slice(0, 8)}...`);
       }
     } catch (connectError) {
-      setError(`CONNECT_FAILED: ${connectError instanceof Error ? connectError.message : 'unknown'}`);
+      setError(`CONNECT_FAILED: ${providerErrorMessage(connectError)}`);
+    }
+  };
+
+  // ── Arc network recovery ───────────────────────────────────────
+  const switchToArc = async () => {
+    const wallet = injectedProviderRef.current;
+    if (!wallet) {
+      setError('EVM_WALLET_NOT_CONNECTED');
+      return;
+    }
+    setError(undefined);
+    try {
+      try {
+        await wallet.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: ARC_TESTNET_CHAIN_ID_HEX }] });
+      } catch (switchError) {
+        if (providerErrorCode(switchError) !== 4902) throw switchError;
+        await wallet.request({ method: 'wallet_addEthereumChain', params: [ARC_NETWORK_PARAMS] });
+        await wallet.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: ARC_TESTNET_CHAIN_ID_HEX }] });
+      }
+      const chainId = await wallet.request({ method: 'eth_chainId' });
+      const matches = expectedChain(typeof chainId === 'string' ? chainId : undefined);
+      setChainMatches(matches);
+      if (!matches) throw new Error(`WRONG_CHAIN: expected Arc Testnet (${ARC_TESTNET_CHAIN_ID_HEX}), got ${chainId}`);
+    } catch (switchError) {
+      const message = providerErrorMessage(switchError);
+      setChainMatches(false);
+      setError(message === 'WALLET_REQUEST_REJECTED' ? 'WALLET_NETWORK_SWITCH_REJECTED' : `CHAIN_SWITCH_FAILED: ${message}`);
     }
   };
 
@@ -147,9 +217,9 @@ export default function ProtectedJobProviderClient() {
         if (!matches) {
           setError(`WRONG_CHAIN: expected Arc Testnet (${ARC_TESTNET_CHAIN_ID_HEX}), got ${chainId}`);
         }
-      } catch {
+      } catch (chainError) {
         setChainMatches(false);
-        setError('CHAIN_CHECK_FAILED');
+        setError(providerErrorCode(chainError) === 4900 ? 'EVM_WALLET_DISCONNECTED' : 'CHAIN_CHECK_FAILED');
       }
     };
 
@@ -205,10 +275,20 @@ export default function ProtectedJobProviderClient() {
         throw new Error(`BUDGET_MISMATCH: expected ${BUDGET.toString()}, got ${inspection.job.budget.toString()}`);
       }
 
-      // Step 6: Simulate
-      const deliverableHash = action === 'submit' ? hashJSON(normalizeTask({text:taskText})) : undefined;
+      // Step 6: Execute actual provider task and derive deliverable hash
+      let deliverableHash: Hex | undefined;
+      if (action === 'submit') {
+        setSimulation('EXECUTING_PROVIDER');
+        try {
+          const providerResult = await executeProviderTask(PROVIDER_ENDPOINT, taskText);
+          deliverableHash = hashJSON(providerResult);
+          setComputedDeliverableHash(deliverableHash);
+        } catch (execError) {
+          throw new Error(`PROVIDER_EXECUTION_FAILED: ${execError instanceof Error ? execError.message : 'unknown'}`);
+        }
+      }
 
-      const simResult = await service.simulate(action, jobId, action === 'submit' ? deliverableHash as `0x${string}` | undefined : undefined);
+      const simResult = await service.simulate(action, jobId, action === 'submit' ? deliverableHash : undefined);
 
       if (!simResult.success) {
         throw new Error(`SIMULATION_FAILED: ${simResult.error}`);
@@ -241,8 +321,22 @@ export default function ProtectedJobProviderClient() {
     setTxState('PREPARING');
 
     try {
-      // Prepare calldata
-      const deliverableHash = action === 'submit' ? hashJSON(normalizeTask({text:taskText})) : undefined;
+      // Deliverable hash was already computed during inspection from the actual
+      // provider endpoint response. If inspection was skipped, re-execute now.
+      let deliverableHash: Hex | undefined;
+      if (action === 'submit') {
+        if (computedDeliverableHash) {
+          deliverableHash = computedDeliverableHash;
+        } else {
+          // Re-fetch from actual provider endpoint
+          try {
+            const providerResult = await executeProviderTask(PROVIDER_ENDPOINT, taskText);
+            deliverableHash = hashJSON(providerResult);
+          } catch (execError) {
+            throw new Error(`PROVIDER_EXECUTION_FAILED: ${execError instanceof Error ? execError.message : 'unknown'}`);
+          }
+        }
+      }
 
       const calldata = service.prepareCalldata(action, jobId, deliverableHash);
 
@@ -252,7 +346,7 @@ export default function ProtectedJobProviderClient() {
       setTxState('AWAITING_WALLET');
 
       const wallet=injectedProviderRef.current;
-      if(!wallet)throw new Error('RABBY_NOT_CONNECTED');
+      if(!wallet)throw new Error('EVM_WALLET_NOT_CONNECTED');
       const [currentAccounts,currentChain]=await Promise.all([
         wallet.request({method:'eth_accounts'}),wallet.request({method:'eth_chainId'}),
       ]);
@@ -462,7 +556,7 @@ export default function ProtectedJobProviderClient() {
       {!provider && (
         <section style={{ marginBottom: '1.5rem' }}>
           <h2>Wallet Connection</h2>
-          <button type="button" onClick={() => void connectWallet()}>Connect Wallet (Rabby)</button>
+          <button type="button" onClick={() => void connectWallet()}>Connect EVM Wallet</button>
         </section>
       )}
 
@@ -474,7 +568,10 @@ export default function ProtectedJobProviderClient() {
           <p>Provider match: {accountMatches ? 'YES' : 'NO'}</p>
           <p>Chain match: {chainMatches ? 'YES' : 'NO'}</p>
           {!accountMatches && <p style={{ color: '#b42318' }}>Connected wallet does not match expected provider wallet ({PROVIDER_WALLET.slice(0, 8)}...)</p>}
-          {!chainMatches && <p style={{ color: '#b42318' }}>Switch to Arc Testnet (chain ID {ARC_TESTNET_CHAIN_ID})</p>}
+          {!chainMatches && <>
+            <p style={{ color: '#b42318' }}>Switch to Arc Testnet (chain ID {ARC_TESTNET_CHAIN_ID})</p>
+            <button type="button" onClick={() => void switchToArc()}>Switch/add Arc Testnet</button>
+          </>}
         </section>
       )}
     </main>

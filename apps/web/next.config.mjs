@@ -1,5 +1,9 @@
 const config={
   poweredByHeader:false,
+  // The dev server is intentionally bound to loopback. Permit the browser's
+  // loopback origin for HMR without allowing arbitrary cross-origin dev
+  // resources.
+  allowedDevOrigins:['127.0.0.1','localhost'],
   // Root `npm run typecheck` is the authoritative strict check. Next's worker
   // otherwise type-instantiates viem's generated ABI types until its depth limit.
   typescript:{ignoreBuildErrors:true},
