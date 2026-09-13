@@ -917,3 +917,24 @@ are reachable, but the configured Neon PostgreSQL endpoint currently times out
 or resets during SSL connection setup. API `/healthz` therefore returns a
 bounded `503` with `postgres:false`; no selection, create, Circle write, or
 chain write was attempted. Full local test/build suite passed after this change.
+
+## Submission Handoff (2026-09-13)
+
+Committed and pushed runtime/reconciliation hardening:
+`9f465ed`, `3e31941`, `1921103`, and `d229293` on `master`.
+
+Verified read-only live dependencies: Arc chain/configuration, ERC-8183 and
+XYXEvaluator reads, ERC-8004 provider identity, Graph deployment/freshness,
+provider task response, Circle buyer wallet session, and buyer ERC-20 balance.
+No new onchain transaction, Circle write, provider signature, or IPFS write was
+sent during this handoff.
+
+The two historical create operations remain `STILL_AMBIGUOUS`: the latest
+durable DB evidence had no Circle operation ID, Arc tx hash, or job ID, so a
+safe reconciliation cannot attribute an onchain job and a retry remains
+forbidden. Current full lifecycle completion is externally blocked because the
+configured Neon PostgreSQL endpoint resets/times out during SSL connection
+setup; optional protected-job evidence/evaluation capability configuration also
+remains absent from the API environment. Do not claim a fresh P0 settlement
+until those dependencies are restored and each explicit live transaction gate
+is confirmed.
